@@ -1,0 +1,2 @@
+[Medium] ESCALATED SRE-1: worker silence
+    → cited evidence not found in logs: ['Redis connection reset in worker logs']

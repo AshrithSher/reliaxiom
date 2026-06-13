@@ -1,0 +1,13 @@
+# diagnosis: enabled (openrouter); actions: LIVE EXECUTE
+# sre-agent watching (C:\Mine\Concave\logs-streaming-demo-app); debounce=20s correlation_window=10s
+# [15:06:44] healthy · 84 lines · 4 services
+# [15:07:00] healthy · 244 lines · 4 services
+# [15:07:16] healthy · 409 lines · 4 services
+# [15:07:32] healthy · 572 lines · 4 services
+# candidate worker:silence — no log lines for 52s (threshold 30s)
+# [15:07:46] DEGRADED · 1111 lines · 4 services
+#    INC-1 [SRE-1] worker:silence → ESCALATED — handed to on-call, still open (agent took no further action)
+# [15:08:36] DEGRADED · 1277 lines · 4 services
+#    INC-1 [SRE-1] worker:silence → ESCALATED — handed to on-call, still open (agent took no further action)
+# [15:08:52] DEGRADED · 1446 lines · 4 services
+#    INC-1 [SRE-1] worker:silence → ESCALATED — handed to on-call, still open (agent took no further action)

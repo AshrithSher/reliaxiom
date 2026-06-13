@@ -1,0 +1,87 @@
+.legend-dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 9999px;
+  margin-right: 0.25rem;
+  vertical-align: middle;
+}
+
+/* buttons */
+.btn {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.35rem 0.75rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgb(51 65 85);
+  background: rgb(30 41 59 / 0.6);
+  color: rgb(226 232 240);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.btn:hover { background: rgb(51 65 85 / 0.8); border-color: rgb(100 116 139); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: rgb(2 132 199); border-color: rgb(2 132 199); color: white; }
+.btn-primary:hover { background: rgb(3 105 161); }
+.btn-danger { background: rgb(190 18 60); border-color: rgb(190 18 60); color: white; }
+.btn-danger:hover { background: rgb(159 18 57); }
+.btn-ghost { background: transparent; }
+.fault-btn { font-size: 0.75rem; padding: 0.3rem 0.6rem; }
+.fault-btn.tier-approval { border-color: rgb(120 83 6); color: rgb(253 224 71); }
+
+/* shared right-side drawer */
+.drawer {
+  position: fixed; top: 0; right: 0; height: 100%; width: 100%; max-width: 32rem;
+  background: rgb(15 23 42); border-left: 1px solid rgb(30 41 59);
+  padding: 1.5rem; overflow-y: auto; z-index: 50;
+  transition: transform 0.3s ease;
+}
+
+/* KPI cards */
+.kpi {
+  background: rgb(15 23 42 / 0.6);
+  border: 1px solid rgb(30 41 59);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+}
+.kpi .val { font-size: 1.5rem; font-weight: 700; line-height: 1.1; }
+.kpi .lbl { font-size: 0.7rem; color: rgb(100 116 139); text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* incident cards */
+.inc-card {
+  cursor: pointer;
+  border: 1px solid rgb(30 41 59);
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  background: rgb(15 23 42 / 0.5);
+  transition: border-color 0.15s, background 0.15s;
+}
+.inc-card:hover { border-color: rgb(71 85 105); background: rgb(30 41 59 / 0.6); }
+
+.badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 9999px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* state -> color (kept in sync with app.js STATE_COLORS) */
+.s-DETECTED, .s-DIAGNOSING, .s-ACTING, .s-VERIFYING { background: rgb(120 53 15); color: rgb(253 230 138); }
+.s-AWAITING_APPROVAL, .s-FLAPPING { background: rgb(113 63 18); color: rgb(254 240 138); }
+.s-RESOLVED { background: rgb(6 78 59); color: rgb(167 243 208); }
+.s-ESCALATED { background: rgb(127 29 29); color: rgb(254 202 202); }
+
+/* pulse on active incidents */
+@keyframes pulse-ring { 0% { box-shadow: 0 0 0 0 rgb(244 63 94 / 0.5); } 70% { box-shadow: 0 0 0 8px rgb(244 63 94 / 0); } 100% { box-shadow: 0 0 0 0 rgb(244 63 94 / 0); } }
+.pulsing { animation: pulse-ring 1.8s infinite; }
+
+/* timeline */
+.tl-item { position: relative; padding-left: 1.1rem; padding-bottom: 0.75rem; border-left: 1px solid rgb(51 65 85); }
+.tl-item:last-child { border-left: 1px solid transparent; }
+.tl-item::before { content: ''; position: absolute; left: -0.3rem; top: 0.15rem; width: 0.55rem; height: 0.55rem; border-radius: 9999px; background: rgb(100 116 139); }
+.tl-item.k-detected::before { background: rgb(245 158 11); }
+.tl-item.k-action::before { background: rgb(56 189 248); }
+.tl-item.k-comment::before { background: rgb(148 163 184); }

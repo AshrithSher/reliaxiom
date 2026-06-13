@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard-demo",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "sre_agent.dashboard.server:app", "--port", "8012", "--log-level", "warning"],
+      "port": 8012,
+      "env": { "SRE_DASHBOARD_CONFIG": "configs\\demo.json" }
+    }
+  ]
+}

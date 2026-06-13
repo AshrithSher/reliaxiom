@@ -1,0 +1,39 @@
+# diagnosis: enabled (gemini); actions: DRY-RUN
+# sre-agent watching (C:\Mine\Concave\logs-streaming-demo-app); debounce=20s correlation_window=10s
+# [09:35:12] healthy · 31 lines parsed · 3 services · containers: all up · queue=0
+# candidate loadgen:error_rate — 91 error lines in last 30s (threshold 8)
+# candidate gateway:error_rate — 91 error lines in last 30s (threshold 8)
+# [09:35:32] healthy · 185 lines parsed · 3 services · containers: all up · queue=0
+# [09:35:52] healthy · 336 lines parsed · 3 services · containers: all up · queue=0
+# [09:36:12] healthy · 487 lines parsed · 3 services · containers: all up · queue=0
+# candidate loadgen:error_rate — 112 error lines in last 30s (threshold 8)
+# candidate gateway:error_rate — 109 error lines in last 30s (threshold 8)
+# [09:36:32] healthy · 641 lines parsed · 3 services · containers: all up · queue=0
+# [09:36:52] healthy · 792 lines parsed · 3 services · containers: all up · queue=0
+# [09:37:12] healthy · 945 lines parsed · 3 services · containers: all up · queue=0
+# candidate loadgen:error_rate — 116 error lines in last 30s (threshold 8)
+# candidate gateway:error_rate — 114 error lines in last 30s (threshold 8)
+# [09:37:32] healthy · 1105 lines parsed · 3 services · containers: all up · queue=0
+# [09:37:52] healthy · 1276 lines parsed · 3 services · containers: all up · queue=0
+# [09:38:12] healthy · 1429 lines parsed · 3 services · containers: all up · queue=0
+# candidate loadgen:error_rate — 117 error lines in last 30s (threshold 8)
+# candidate gateway:error_rate — 117 error lines in last 30s (threshold 8)
+# [09:38:32] healthy · 1595 lines parsed · 3 services · containers: all up · queue=0
+# [09:38:52] healthy · 1746 lines parsed · 3 services · containers: all up · queue=0
+# [09:39:13] healthy · 1893 lines parsed · 3 services · containers: all up · queue=0
+# candidate loadgen:error_rate — 113 error lines in last 30s (threshold 8)
+# candidate gateway:error_rate — 111 error lines in last 30s (threshold 8)
+# [09:39:33] healthy · 2051 lines parsed · 3 services · containers: all up · queue=0
+# [09:39:53] healthy · 2204 lines parsed · 3 services · containers: all up · queue=0
+# [09:40:13] healthy · 2357 lines parsed · 3 services · containers: all up · queue=0
+# candidate loadgen:error_rate — 115 error lines in last 30s (threshold 8)
+# candidate gateway:error_rate — 113 error lines in last 30s (threshold 8)
+# [09:40:33] healthy · 2511 lines parsed · 3 services · containers: all up · queue=0
+# [09:40:53] healthy · 2664 lines parsed · 3 services · containers: all up · queue=0
+# [09:41:13] healthy · 2819 lines parsed · 3 services · containers: all up · queue=0
+# candidate loadgen:error_rate — 118 error lines in last 30s (threshold 8)
+# candidate gateway:error_rate — 118 error lines in last 30s (threshold 8)
+# [09:41:33] healthy · 2978 lines parsed · 3 services · containers: all up · queue=0
+# [09:41:54] healthy · 3128 lines parsed · 3 services · containers: DOWN=worker · queue=0
+# candidate worker:silence — no log lines for 51s (threshold 30s)
+# log stream ended; exiting

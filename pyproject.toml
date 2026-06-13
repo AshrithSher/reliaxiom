@@ -1,0 +1,18 @@
+[project]
+name = "sre-agent"
+version = "0.1.0"
+description = "Autonomous SRE agent for the logs-streaming-demo-app lab"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+dashboard = ["fastapi>=0.110", "uvicorn>=0.29"]
+
+[tool.setuptools.packages.find]
+include = ["sre_agent*", "eval*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

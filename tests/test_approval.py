@@ -1,0 +1,147 @@
+"""TDD: HITL approval (M5, Tier 2). A diagnosis that selects an APPROVAL-tier action is NOT
+auto-executed — the agent posts a proposal (with blast radius) and waits. A human approve
+runs the action and records who approved; reject escalates; a 15-min timeout escalates with
+NO action taken."""
+from datetime import timedelta
+
+import pytest
+
+from sre_agent.action.catalog import Tier
+from sre_agent.action.executor import ActionExecutor, Guardrails
+from sre_agent.action.recovery import RecoveryEvaluator
+from sre_agent.changelog import ChangeLog
+from sre_agent.config import Config
+from sre_agent.diagnosis.schema import Diagnosis
+from sre_agent.incident.lifecycle import IncidentState
+from sre_agent.incident.manager import IncidentManager
+from sre_agent.incident.models import Incident
+from sre_agent.incident.store import IncidentStore
+from sre_agent.incident.topology import LAB_TOPOLOGY
+from sre_agent.integrations.notifications import InMemoryNotifier
+from sre_agent.integrations.ticketing import SqliteTicketStore, TicketStatus
+from tests.helpers import T0
+
+
+class FakeRunner:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, cmd):
+        self.calls.append(cmd)
+        return 0, "ok", ""
+
+
+def cfg():
+    c = Config()
+    c.approval_timeout_s = 900.0
+    return c
+
+
+def build(tmp_path):
+    c = cfg()
+    tickets = SqliteTicketStore(tmp_path / "t.db")
+    incidents = IncidentStore(tmp_path / "i.db")
+    notifier = InMemoryNotifier()
+    changelog = ChangeLog(tmp_path / "c.db")
+    runner = FakeRunner()
+    mgr = IncidentManager(incidents, tickets, notifier, LAB_TOPOLOGY, c,
+                          executor=ActionExecutor(runner=runner, dry_run=False),
+                          guardrails=Guardrails(c.max_restarts_per_hour, changelog),
+                          recovery=RecoveryEvaluator(c), changelog=changelog)
+    return mgr, tickets, incidents, notifier, runner
+
+
+def diagnosing_incident(tickets, incidents, root="redis", fault="unreachable"):
+    ticket = tickets.create(fingerprint=f"{root}:{fault}", title="x", services=["api", "worker"],
+                            fault_type=fault, severity="High", evidence="x", now=T0)
+    inc = Incident(id="INC-1", fingerprint=f"{root}:{fault}", ticket_id=ticket.id,
+                   state=IncidentState.DIAGNOSING, root_service=root, services=["api", "worker"],
+                   fault_type=fault, severity="High", first_seen=T0, updated_at=T0)
+    incidents.save(inc)
+    return inc
+
+
+def approval_dx():
+    # restart redis is Tier-2 APPROVAL
+    return Diagnosis(root_cause="redis stuck", evidence=["e"], selected_action="restart_container",
+                     action_params={"service": "redis"}, alternatives=[], tier=Tier.APPROVAL,
+                     escalate=False, escalation_reasons=[])
+
+
+def at(s):
+    return T0 + timedelta(seconds=s)
+
+
+def test_approval_action_requests_not_executes(tmp_path):
+    mgr, tickets, incidents, notifier, runner = build(tmp_path)
+    inc = diagnosing_incident(tickets, incidents)
+    mgr.request_approval(inc, approval_dx(), now=at(10))
+    stored = incidents.get("INC-1")
+    assert stored.state is IncidentState.AWAITING_APPROVAL
+    assert stored.pending_action == "restart_container" and stored.pending_params == {"service": "redis"}
+    assert runner.calls == []                               # nothing executed yet
+    assert notifier.sent[-1].kind == "approval"
+    assert "redis" in notifier.sent[-1].body                # blast radius mentions target
+    assert tickets.get(inc.ticket_id).status is TicketStatus.AWAITING_APPROVAL
+
+
+def test_approve_executes_and_records_approver(tmp_path):
+    mgr, tickets, incidents, _, runner = build(tmp_path)
+    inc = diagnosing_incident(tickets, incidents)
+    mgr.request_approval(inc, approval_dx(), now=at(10))
+    result = mgr.approve("INC-1", approver="alice@example.com", now=at(60))
+    assert result.success and runner.calls == [["docker", "restart", "redis"]]
+    assert incidents.get("INC-1").state is IncidentState.VERIFYING
+    comments = " ".join(c.body for c in tickets.get(inc.ticket_id).comments)
+    assert "alice@example.com" in comments
+
+
+def test_reject_escalates_without_acting(tmp_path):
+    mgr, tickets, incidents, _, runner = build(tmp_path)
+    inc = diagnosing_incident(tickets, incidents)
+    mgr.request_approval(inc, approval_dx(), now=at(10))
+    mgr.reject("INC-1", approver="bob@example.com", now=at(60))
+    assert incidents.get("INC-1").state is IncidentState.ESCALATED
+    assert runner.calls == []
+    assert tickets.get(inc.ticket_id).status is TicketStatus.ESCALATED
+
+
+def test_timeout_escalates_without_acting(tmp_path):
+    mgr, tickets, incidents, _, runner = build(tmp_path)
+    inc = diagnosing_incident(tickets, incidents)
+    mgr.request_approval(inc, approval_dx(), now=at(10))
+    # before the deadline: nothing happens
+    mgr.check_approval_timeouts(now=at(100))
+    assert incidents.get("INC-1").state is IncidentState.AWAITING_APPROVAL
+    # past the 15-min deadline: escalate, no action
+    mgr.check_approval_timeouts(now=at(10 + 901))
+    assert incidents.get("INC-1").state is IncidentState.ESCALATED
+    assert runner.calls == []
+
+
+def test_step_routes_approval_tier_to_request(tmp_path):
+    """_progress (used by step) must request approval for a Tier-2 action, not escalate it."""
+    mgr, tickets, incidents, notifier, runner = build(tmp_path)
+    inc = diagnosing_incident(tickets, incidents)
+    # drive _progress directly with an injected diagnoser returning an APPROVAL action
+    mgr._diagnoser = _StubDiagnoser(approval_dx())
+    mgr._assembler = _StubAssembler()
+    mgr._progress(inc, window=None, signals=None, now=at(10))
+    assert incidents.get("INC-1").state is IncidentState.AWAITING_APPROVAL
+    assert runner.calls == []
+
+
+class _StubAssembler:
+    def build(self, incident, window, now, signals=None):
+        return "sys", "user"
+
+    def make_verifier(self, corpus):
+        return lambda ref: True
+
+
+class _StubDiagnoser:
+    def __init__(self, dx):
+        self._dx = dx
+
+    def diagnose(self, *, system, user, verify_evidence, restart_target=None):
+        return self._dx

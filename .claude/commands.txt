@@ -1,0 +1,14 @@
+cd C:\Mine\Concave\SRE
+docker compose up -d
+docker compose down
+
+
+# Optional: Run this line ONLY if you want to reset the agent state
+Remove-Item -Path "C:\Mine\Concave\SRE\.state" -Recurse -Force -ErrorAction SilentlyContinue
+
+# 1. Start the lab
+docker compose -f C:\Mine\Concave\logs-streaming-demo-app\docker-compose.yml up -d
+
+# 2. Set config and launch the dashboard
+$env:SRE_DASHBOARD_CONFIG="configs\demo.json"
+C:\Mine\Concave\SRE\.venv\Scripts\python.exe -m uvicorn sre_agent.dashboard.server:app --port 8000

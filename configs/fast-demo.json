@@ -1,0 +1,16 @@
+{
+  "tick_interval_s": 2.0,
+  "debounce_s": 20.0,
+  "cooldown_s": 60.0,
+  "silence_threshold_s": 30.0,
+  "error_rate_window_s": 30.0,
+  "error_rate_threshold": 8,
+  "correlation_window_s": 10.0,
+  "recovery_window_s": 40.0,
+  "recovery_check_s": 30.0,
+  "action_suppression_s": 60.0,
+  "diagnosis_runs": 1,
+  "approval_timeout_s": 180.0,
+  "max_restarts_per_hour": 2,
+  "status_interval_s": 15.0
+}

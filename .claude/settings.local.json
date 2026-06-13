@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(\\(Get-Content C:\\\\Mine\\\\Concave\\\\SRE\\\\eval\\\\harness.py -Raw\\) -replace 'print\\\\\\(f\"--- ', 'print\\(flush=True or \"\", end=\"\"\\); print\\(f\"--- ' | Out-Null; 'skip')",
+      "PowerShell(docker compose -f C:\\\\Mine\\\\Concave\\\\logs-streaming-demo-app\\\\docker-compose.yml ps --format \"table {{.Name}}\\\\t{{.Status}}\")"
+    ]
+  }
+}
