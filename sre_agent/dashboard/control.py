@@ -180,3 +180,16 @@ def reject_incident(cfg: Config, ticket_store, postmortems, incident_id: str,
     now = datetime.now(timezone.utc)
     mgr.reject(incident_id, approver=approver, now=now)
     return {"ok": True, "detail": f"{incident_id} rejected → escalated"}
+
+
+def resolve_incident(cfg: Config, ticket_store, postmortems, incident_id: str,
+                     resolver: str) -> dict:
+    """Human closure for an escalated/flapping incident the operator fixed out-of-band — the
+    'I fixed it myself, close the ticket' action the UI was missing. The agent never auto-closes
+    a handed-off incident, so this is the only way one leaves the board once escalated."""
+    mgr = _approval_manager(cfg, ticket_store, postmortems)
+    now = datetime.now(timezone.utc)
+    inc = mgr.manual_resolve(incident_id, resolver=resolver, now=now)
+    if inc is None:
+        return {"ok": False, "error": f"{incident_id} is not escalated/flapping — nothing to close"}
+    return {"ok": True, "detail": f"{incident_id} resolved by {resolver}"}

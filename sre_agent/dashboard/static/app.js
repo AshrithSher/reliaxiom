@@ -123,6 +123,13 @@ async function openDrawer(id) {
         <button class="btn btn-primary" onclick="decide('${i.id}','approve')">Approve & run</button>
         <button class="btn btn-danger" onclick="decide('${i.id}','reject')">Reject → escalate</button>
       </div></div>`;
+  } else if (i.human_resolvable) {
+    // escalated/flapping = handed to a human; the agent won't auto-close it. If you fixed it
+    // out-of-band (e.g. `docker start redis`), close the ticket here.
+    approve = `<div class="bg-slate-800/60 border border-slate-700 rounded p-3">
+      <div class="text-slate-300 text-xs mb-2">${i.state} — the agent handed this off. Fixed it yourself? Close it.</div>
+      <button class="btn btn-primary" onclick="decide('${i.id}','resolve')">Mark resolved</button>
+    </div>`;
   }
   const tl = (i.timeline || []).map((e) =>
     `<div class="tl-item k-${e.kind}"><div class="text-xs text-slate-500">${new Date(e.ts).toLocaleTimeString()}</div><div>${e.text}</div></div>`).join("");

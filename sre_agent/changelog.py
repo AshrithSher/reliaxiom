@@ -10,6 +10,8 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from sre_agent.db import connect
+
 
 class ChangeLogEntry(BaseModel):
     ts: datetime
@@ -21,8 +23,7 @@ class ChangeLogEntry(BaseModel):
 
 class ChangeLog:
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._conn = connect(path)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS changes (

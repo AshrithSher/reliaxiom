@@ -305,6 +305,31 @@ class IncidentManager:
         self._write_postmortem(inc, "resolved", now)
         return inc
 
+    def manual_resolve(self, incident_id: str, resolver: str, now: "_dt") -> Incident | None:
+        """Human closure for an incident the agent handed off. ESCALATED (rejected / timed out
+        / guardrail / chronic flap) and FLAPPING incidents are human-owned: the agent never
+        auto-closes them (that's why a manual `docker start redis` after a reject doesn't move
+        the ticket on its own). This is the person who fixed it out-of-band telling the system
+        'I fixed it, close it.' Agent-driven incidents still resolve through the verify loop —
+        this path is only for the states the agent has stepped away from, so it returns None
+        (a no-op) for anything else rather than racing the agent's own lifecycle."""
+        inc = self._istore.get(incident_id)
+        if inc is None:
+            return None
+        if inc.state not in (IncidentState.ESCALATED, IncidentState.FLAPPING):
+            return None
+        inc.transition(IncidentState.RESOLVED, now)
+        self._istore.save(inc)
+        if inc.ticket_id:
+            self._tickets.set_status(inc.ticket_id, TicketStatus.RESOLVED, now=now)
+            self._tickets.add_comment(
+                inc.ticket_id, author=resolver,
+                body=f"manually resolved by {resolver} — fixed out-of-band, closed by a human",
+                now=now)
+        self._notify("resolved", inc, f"manually resolved by {resolver}")
+        self._write_postmortem(inc, "resolved", now)
+        return inc
+
     def _write_postmortem(self, inc: Incident, outcome: str, now: "_dt") -> None:
         """Capture what happened for the record and as incident memory (M6)."""
         if self._postmortems is None:

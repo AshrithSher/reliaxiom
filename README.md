@@ -1,7 +1,10 @@
 # SRE Agent
 
-An autonomous incident-response agent for the 7-container lab system in
-`C:\Mine\Concave\logs-streaming-demo-app` (gateway → webapp → api → postgres/redis ← worker, plus loadgen as a synthetic user).
+An autonomous incident-response agent. **Proven** end-to-end on the 9-container lab system in
+`C:\Mine\Concave\logs-streaming-demo-app` (gateway → webapp → api → postgres/redis/auth ← worker
+→ payments, plus loadgen as a synthetic user); **designed** to connect to any application in any
+cloud or on-prem through swappable adapters with MCP as the primary connector — see
+[VISION.md](VISION.md).
 
 ## Core principle
 
@@ -19,8 +22,9 @@ An autonomous incident-response agent for the 7-container lab system in
 | [CLAUDE.md](CLAUDE.md) | Instructions for Claude Code when working in this repo |
 | [AGENT.md](AGENT.md) | Behavioral spec for the SRE agent itself — lifecycle, tiers, guardrails |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Layer-by-layer system design |
+| [VISION.md](VISION.md) | North star — substrate-agnostic engine + MCP connectors (any cloud/on-prem) |
 | [DECISIONS.md](DECISIONS.md) | Design decisions and their rationale |
-| [ROADMAP.md](ROADMAP.md) | Build order and milestones |
+| [ROADMAP.md](ROADMAP.md) | Build order and milestones — Part I (agent, done) + Part II (platform, planned) |
 
 ## Target system
 

@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 from sre_agent.config import Config
 from sre_agent.detect.base import Detector
 from sre_agent.ingest.parser import LineParser
-from sre_agent.ingest.window import SlidingWindow
 from sre_agent.models import Anomaly
+from sre_agent.telemetry.sources import LogSource
 
 
 class MalformedSpikeDetector(Detector):
@@ -22,7 +22,7 @@ class MalformedSpikeDetector(Detector):
         self.window_s = cfg.malformed_window_s
         self.threshold = cfg.malformed_threshold
 
-    def check(self, window: SlidingWindow, now: datetime) -> list[Anomaly]:
+    def check(self, logs: LogSource, now: datetime) -> list[Anomaly]:
         since = now - timedelta(seconds=self.window_s)
         count = self.parser.corrupt_since(since)
         if count >= self.threshold:

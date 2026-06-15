@@ -30,7 +30,11 @@ _ALLOWED: dict[IncidentState, set[IncidentState]] = {
     IncidentState.VERIFYING: {IncidentState.RESOLVED, IncidentState.DIAGNOSING},
     IncidentState.RESOLVED: {IncidentState.FLAPPING},     # reopen only via flapping
     IncidentState.FLAPPING: {IncidentState.DIAGNOSING, IncidentState.RESOLVED},
-    IncidentState.ESCALATED: set(),                       # terminal — a human owns it
+    # terminal *to the agent* — it never re-diagnoses or acts on a handed-off incident. The
+    # one remaining edge is RESOLVED, reached ONLY by an explicit human resolve (a person who
+    # fixed it out-of-band saying "close it" — manager.manual_resolve). The agent's own loop
+    # never closes an escalated incident; escalation = a human owns it.
+    IncidentState.ESCALATED: {IncidentState.RESOLVED},
 }
 
 # states from which escalation is always permitted

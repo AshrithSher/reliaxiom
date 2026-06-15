@@ -50,6 +50,51 @@ class SignalSnapshot(BaseModel):
     pg_connections: int | None = None
 
 
+class MetricPoint(BaseModel):
+    """One (timestamp, value) sample of a metric series."""
+
+    ts: datetime
+    value: float
+
+
+class MetricSeries(BaseModel):
+    """A labelled metric series — one PromQL result vector entry."""
+
+    labels: dict[str, str] = Field(default_factory=dict)
+    points: list[MetricPoint] = Field(default_factory=list)
+
+
+class Span(BaseModel):
+    """One span of a distributed trace (OTel/Tempo shape, trimmed to what we use)."""
+
+    trace_id: str
+    span_id: str
+    parent_id: str | None = None
+    service: str
+    name: str
+    start: datetime
+    duration_ms: float
+    status: str = "OK"  # OK | ERROR (OTel status_code, normalised)
+
+    @property
+    def is_error(self) -> bool:
+        return self.status.upper() == "ERROR"
+
+
+class Trace(BaseModel):
+    """A whole trace — the cross-service story for one request."""
+
+    trace_id: str
+    spans: list[Span] = Field(default_factory=list)
+
+    @property
+    def services(self) -> list[str]:
+        seen: dict[str, None] = {}
+        for s in self.spans:
+            seen.setdefault(s.service, None)
+        return list(seen)
+
+
 class Anomaly(BaseModel):
     """A single tick's observation that something is off. Pre-debounce."""
 

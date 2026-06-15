@@ -13,6 +13,7 @@ import argparse
 import os
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from sre_agent.detect.engine import DetectionEngine
 from sre_agent.detect.error_rate import ErrorRateDetector
 from sre_agent.detect.latency import LatencyDetector
 from sre_agent.detect.malformed import MalformedSpikeDetector
+from sre_agent.detect.metrics import (MetricErrorRatioDetector, MetricLatencyDetector,
+                                      SaturationDetector, TraceErrorDetector)
 from sre_agent.detect.queue_depth import QueueDepthDetector
 from sre_agent.detect.silence import SilenceDetector
 from sre_agent.diagnosis.context import ContextAssembler
@@ -43,17 +46,37 @@ from sre_agent.integrations.postmortems import SqlitePostMortemStore
 from sre_agent.integrations.ticketing import SqliteTicketStore
 from sre_agent.poll.adapters import build_live_pollers
 from sre_agent.poll.store import PollCycle, PollLoop, SignalStore
+from sre_agent.telemetry.adapters import build_live_telemetry_sources
 
 
-def build_engine(cfg: Config, parser: LineParser, changelog=None) -> DetectionEngine:
-    return DetectionEngine([
+def build_engine(cfg: Config, parser: LineParser, changelog=None,
+                 telemetry: dict | None = None, signals=None) -> DetectionEngine:
+    """The log detectors always run. Metric/trace detectors are appended only when their
+    backend is enabled in config (telemetry == build_live_telemetry_sources(cfg)), so the
+    default tailed-log path is unchanged. The container-down detector is appended only when a
+    SignalStore is supplied (the agent and eval harness do; unit harnesses on hand-fed logs
+    don't), so a stopped stateful dependency tickets even with no downstream log flood."""
+    detectors = [
         ErrorRateDetector(cfg),
         LatencyDetector(cfg),
         SilenceDetector(cfg),
         CrashLoopDetector(cfg),
         QueueDepthDetector(cfg),
         MalformedSpikeDetector(cfg, parser),
-    ], cfg, changelog=changelog)
+    ]
+    if signals is not None and cfg.container_down_services:
+        from sre_agent.detect.container_down import ContainerDownDetector
+        detectors.append(ContainerDownDetector(cfg, signals))
+    telemetry = telemetry or {}
+    metrics = telemetry.get("metrics")
+    if metrics is not None:
+        detectors += [MetricErrorRatioDetector(cfg, metrics),
+                      MetricLatencyDetector(cfg, metrics),
+                      SaturationDetector(cfg, metrics)]
+    traces = telemetry.get("traces")
+    if traces is not None:
+        detectors.append(TraceErrorDetector(cfg, traces))
+    return DetectionEngine(detectors, cfg, changelog=changelog)
 
 
 def load_secrets(secrets_dir: str = ".secrets") -> None:
@@ -223,7 +246,15 @@ def main(argv: list[str] | None = None) -> int:
     changelog = ChangeLog(data_dir / "changes.db")
     postmortems = build_postmortem_store(cfg, data_dir)
     ticket_store = build_ticket_store(cfg, data_dir)
-    engine = build_engine(cfg, parser, changelog=changelog)
+    telemetry = build_live_telemetry_sources(cfg)
+    engine = build_engine(cfg, parser, changelog=changelog, telemetry=telemetry,
+                          signals=signals)
+    # detectors read logs through the LogSource SPI: in-memory window by default, Loki when
+    # telemetry_logs == "loki" (D-031). The window is always kept (diagnosis context uses it).
+    log_source = telemetry.get("logs") or window
+    if telemetry:
+        print("# telemetry: " + ", ".join(
+            f"{k}={type(v).__name__}" for k, v in telemetry.items()), file=sys.stderr)
     diagnoser = Diagnoser(provider, runs=cfg.diagnosis_runs, temperature=cfg.llm_temperature) \
         if provider is not None else None
     assembler = ContextAssembler(LAB_TOPOLOGY, cfg, changelog=changelog, postmortems=postmortems) \
@@ -235,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         diagnoser=diagnoser, assembler=assembler,
         executor=ActionExecutor(dry_run=cfg.dry_run),
         guardrails=Guardrails(cfg.max_restarts_per_hour, changelog),
-        recovery=RecoveryEvaluator(cfg),
+        recovery=RecoveryEvaluator(cfg, metrics=telemetry.get("metrics")),
         changelog=changelog, postmortems=postmortems,
     )
     print(f"# diagnosis: {'enabled (' + cfg.llm_provider + ')' if provider else 'disabled (no API key)'}; "
@@ -257,21 +288,31 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while True:
             time.sleep(cfg.tick_interval_s)
-            now = datetime.now(timezone.utc)
-            window.prune(now)
-            for candidate in engine.tick(window, now):
-                print(f"# candidate {candidate.fingerprint()} — {candidate.detail}", file=sys.stderr)
-                manager.ingest(candidate, now)
-            # one full agent cycle: create incidents, diagnose+act new ones, verify in-flight
-            manager.step(window, signals.latest(), now)
+            try:
+                now = datetime.now(timezone.utc)
+                window.prune(now)
+                for candidate in engine.tick(log_source, now):
+                    print(f"# candidate {candidate.fingerprint()} — {candidate.detail}",
+                          file=sys.stderr)
+                    manager.ingest(candidate, now)
+                # one full agent cycle: create incidents, diagnose+act new ones, verify in-flight
+                manager.step(window, signals.latest(), now)
 
-            if time.monotonic() - last_status >= cfg.status_interval_s:
-                _print_status(incident_store, parser, window, signals, cfg, now)
-                last_status = time.monotonic()
+                if time.monotonic() - last_status >= cfg.status_interval_s:
+                    _print_status(incident_store, parser, window, signals, cfg, now)
+                    last_status = time.monotonic()
 
-            if not tailer.alive and not args.stdin:
-                print("# log stream ended; exiting", file=sys.stderr)
-                return 1
+                if not tailer.alive and not args.stdin:
+                    print("# log stream ended; exiting", file=sys.stderr)
+                    return 1
+            except KeyboardInterrupt:
+                raise   # Ctrl+C is a clean shutdown, not a tick error
+            except Exception:  # noqa: BLE001
+                # One bad tick — a locked DB, a telemetry blip, an LLM hiccup — must never
+                # freeze detection. Log it and keep ticking; a silently wedged agent that
+                # stops detecting is the failure this whole project exists to avoid.
+                print("# tick error (continuing):", file=sys.stderr)
+                traceback.print_exc()
     except KeyboardInterrupt:
         return 0
     finally:

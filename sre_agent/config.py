@@ -25,6 +25,22 @@ class Config:
     # Sliding window
     window_max_age_s: int = 900  # keep 15 min of context for later layers
 
+    # Telemetry sources (P0.1 / D-031). Detection reads through the TelemetrySource SPI; the
+    # defaults keep the lab on the in-memory tailed-log path so the offline suite is untouched.
+    # Flip a backend on to query real metrics/traces from the free Grafana LGTM stack.
+    telemetry_logs: str = "tailed"        # "tailed" (SlidingWindow) | "loki"
+    telemetry_metrics: str = "off"        # "off" | "prometheus"
+    telemetry_traces: str = "off"         # "off" | "tempo"
+    prometheus_url: str = "http://localhost:9090"
+    loki_url: str = "http://localhost:3100"
+    tempo_url: str = "http://localhost:3200"
+    # services that expose RED metrics / spans (the instrumented Flask tiers)
+    metric_services: list[str] = field(
+        default_factory=lambda: ["api", "webapp", "auth", "payments"]
+    )
+    metric_error_ratio_threshold: float = 0.2      # 5xx fraction per service → anomaly
+    metric_latency_p95_threshold_ms: float = 1000.0  # real histogram p95, replaces log-derived
+
     # Diagnosis LLM (M3). Provider is swappable: "gemini" now, "anthropic" later — the
     # diagnosis layer only knows the LLMProvider interface. The API key is read from the
     # env var named here, never from this file.
@@ -108,6 +124,19 @@ class Config:
         default_factory=lambda: ["gateway", "webapp", "api", "worker", "loadgen"]
     )
     silence_threshold_s: float = 45.0  # worker heartbeats every ~15s; 3 missed = silent
+
+    # container-down detector: a stopped/unhealthy stateful dependency is a fault in itself,
+    # independent of how much its consumers happen to log. These are exactly the services the
+    # silence detector excludes (they log rarely when healthy) and whose downstream error
+    # cadence is too slow/short-circuited to reliably trip error_rate (a redis consumer retries
+    # every few seconds; a db outage behind a broken auth tier never reaches the db at all).
+    # Maps container name -> the dependency error code so a container-down candidate correlates
+    # to the SAME `service:unreachable` fingerprint the log path produces (one fault = one
+    # ticket). Driven by the polled SignalStore; runs through the engine, so it inherits
+    # debounce/cooldown and action-suppression (won't alarm on the agent's own restarts).
+    container_down_services: dict[str, str] = field(
+        default_factory=lambda: {"postgres": "db_unreachable", "redis": "redis_unreachable"}
+    )
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> "Config":

@@ -337,6 +337,34 @@ lab service and the sole `latency_services` member — was missing from the cata
 target, so a future topology addition can't silently fall out of the catalog again.
 
 
+## D-031 · 2026-06-13 · Strategic direction: substrate-agnostic engine + MCP as the universal connector
+The product evolves from a lab-specific agent into a platform that connects to **any application
+in any cloud or on-prem** without forking the engine. The architecture is three rings (see
+[VISION.md](VISION.md)): **Ring 0** the substrate-agnostic engine (already built — detect /
+correlate / state machine / diagnose / tier / verify / HITL / post-mortem operate only on
+abstract objects); **Ring 1** per-environment adapters behind Provider SPIs (`TelemetrySource`,
+`ActionBackend`, `TopologyProvider`, `ChangeFeed`, plus the existing TicketStore / Notifier /
+PostMortemStore); **Ring 2** connectors, with **MCP servers as the primary wire** and native
+SDK/REST adapters where no MCP server exists. The agent becomes both an MCP **client** (consume
+telemetry/action/ITSM servers) and, later, an MCP **server** (expose incident state + gated
+approve tools to an agent mesh). Priority order is in [ROADMAP.md](ROADMAP.md) Part II (P0–P3).
+**Why:** the engine's value is that it is environment-independent; the only thing stopping
+"works on the lab" from becoming "works on your stack" is the connector layer, and MCP is an
+open, discoverable, credential-scoped substrate already proliferating across exactly the
+observability/cloud/ITSM systems an SRE agent must touch. Reuses the proven stubs-before-real,
+interface-backed discipline (D-006/D-024) rather than inventing a new pattern.
+**Consequence — invariants are reinforced, not relaxed, when actions arrive over MCP:** an MCP
+tool is *transport, never policy* — it is mapped into the enumerated catalog with an
+operator-assigned tier (never auto-tiered; unmapped tools are inert), so a confident-but-wrong
+model still cannot invoke a risky tool (#2; D-003). Telemetry MCP servers feed deterministic
+detectors only (#1). Every MCP action is change-log-tagged before execution (#5/#7). No MCP tool
+in any tier performs a destructive data-of-record operation, enforced at the catalog mapping
+(#4). Telemetry pulled via MCP is untrusted input to diagnosis, so the evidence-grounding /
+double-run guards (D-004/D-018) and tiers-in-code remain the backstop. Every environment onboards
+through the shadow → suggest → auto trust tiers (D-019/D-022), gated by the P1 meta-monitoring
+false-positive/MTTR signals. **Nothing here is implemented yet — it is the recorded plan.**
+
+
 ## D-030 · 2026-06-13 · Tolerate the model echoing an action's display form as its id
 The diagnoser strips a trailing parameter hint from `selected_action` (e.g.
 `restart_container(service)` → `restart_container`) before resolving, and `catalog_summary`
@@ -349,3 +377,114 @@ should have fixed itself. Letting a cosmetic prompt-formatting artifact trigger 
 escalation needlessly pages a human and erodes invariant #6's spirit. The id is still validated
 against the catalog (invariant #2 intact) — only an obvious display-form artifact is normalized.
 **Consequence:** 263 offline tests green (3 new).
+
+
+## D-032 · 2026-06-13 · TelemetrySource SPI (P0.1): detectors read logs/metrics/traces through interfaces
+The detection layer no longer depends on the concrete `SlidingWindow`. A `sre_agent/telemetry/`
+package defines three read SPIs — `LogSource` (the four methods detectors already used:
+`services`/`last_seen`/`records`/`error_records`), `MetricSource` (instant + range PromQL), and
+`TraceSource` (per-service error rate + trace-by-id). Every detector and `DetectionEngine.tick`
+now type against `LogSource`; `SlidingWindow` is the default in-memory impl (a `runtime_checkable`
+Protocol conformance test pins this). Live adapters (`telemetry/adapters.py`) — `PrometheusMetricSource`,
+`LokiLogSource` (reuses the tolerant `LineParser`), `TempoTraceSource` — inject their HTTP transport
+and **degrade to None/empty on any failure, never raise** (extends D-015). `build_live_telemetry_sources(cfg)`
+selects backends; `main.build_engine` appends metric/trace detectors only when their backend is on,
+and the detector log source is Loki when `telemetry_logs == "loki"` else the window.
+**Why:** the single tailed log stream is the lab simplification flagged in VISION.md/ROADMAP P0.1 —
+real detection leans on metrics (a Prometheus histogram p95, not a log-derived guess) and traces.
+The seam half-existed (D-006/D-015); this completes it for the four telemetry signals without
+touching detection logic. **Invariants held:** detection stays deterministic (#1) — sources feed
+code thresholds, never the LLM; a down backend degrades silently (#6, no fabricated anomaly).
+**Consequence:** defaults keep the lab on the tailed path (`telemetry_*` off), so all offline tests
+ran untouched; 290 green (26 new: adapters, metric/trace detectors, Protocol conformance).
+
+## D-033 · 2026-06-13 · Lab instrumented with the free Grafana LGTM stack (no API keys)
+`logs-streaming-demo-app` had zero observability (JSON logs to stdout only). Added, self-hosted in
+its compose: Prometheus (scrapes `/metrics`), Loki + Alloy (ships Docker logs), Tempo + OTel
+Collector (OTLP traces), Grafana, cAdvisor. The Flask services gained a ~15-line `prometheus_client`
+RED block (`http_requests_total`, `http_request_duration_seconds` on `/metrics`); the worker exports
+`queue_depth` + `jobs_processed_total`. OTel is **auto-instrumentation, opt-in per container**
+(`OTEL_ENABLED=1`; the Dockerfile CMD falls back to plain `python app.py` so a missing collector can
+never stop a service booting).
+**Why:** the user chose the full RED/USE + traces path; instrumenting the services gives real
+histograms/spans rather than log-derived metrics. Everything is free OSS on localhost — no account,
+token, or cost — which is the whole point of the "what do you need to provide" answer: nothing paid.
+**Consequence:** the agent runs against real backends with `telemetry_metrics=prometheus`,
+`telemetry_traces=tempo` (and optionally `telemetry_logs=loki`); validated live on the full stack —
+`errors-red` detected via `metric_error_ratio` (api 41% / webapp 84% 5xx) in 143s, real api histogram
+p95 ≈ 59ms in Prometheus, all five services emitting traces to Tempo.
+**Live-bring-up gotchas (fixed):** (1) `opentelemetry-instrument` imports `pkg_resources`, which
+`python:3.12-slim` no longer ships and which **setuptools ≥81 removed** — so the OTel services
+crash-looped until the Dockerfiles pinned `"setuptools<81"`. (2) Recreating a service behind the
+nginx `gateway` leaves nginx resolving the old container IP → 502s until `docker compose restart
+gateway`; not an instrumentation fault, a compose-recreate artifact.
+
+## D-034 · 2026-06-13 · Metric/trace detectors are deterministic; metric-path eval scenarios added
+New detectors `MetricErrorRatioDetector` (RED-errors), `MetricLatencyDetector` (RED-duration, real
+histogram p95), `SaturationDetector` (USE, queue gauge) and `TraceErrorDetector` query their source
+with a **fixed PromQL/TraceQL string + a code threshold** — no LLM, no model-set tiers. They emit the
+same `Anomaly` objects, so debounce/cooldown/correlation are unchanged, and the log + metric twins of
+one fault collapse into a single incident (#3). The eval harness gained telemetry-aware `_LiveAgent`,
+applies a scenario's `extra_config` (to flip telemetry on), and honors a new `allow_signals` field so
+a co-firing twin isn't scored as a false positive. Scenarios `errors-red` and `latency-red` exercise
+the metric path; `latency-red` is the metric-path resolution of D-014's deferral (the histogram p95
+is a clean single signal where the log path was too multi-signal to score).
+**Why:** telemetry is *untrusted input* to detection — keeping the queries/thresholds in code is the
+backstop (VISION §4). **Consequence:** these scenarios require the LGTM stack up; existing log-only
+scenarios are unchanged. Follow-ups remain P0.2 (back these adapters with MCP servers) and P1.1 (fuse
+the three signals in the correlation engine).
+
+
+## D-035 · 2026-06-13 · Metric-detected faults are verified on the same metric (close the detect→fix→verify loop)
+`RecoveryEvaluator` takes an optional `MetricSource`. A `metric_latency_p95` incident is recovered
+only when the Prometheus p95 is back under threshold; `metric_error_ratio` only when the 5xx ratio is;
+`metric_saturation` only when the queue gauge is — each with a log sanity check. The PromQL is built
+from one shared module (`telemetry/promql.py`) used by both the detectors and the verifier, so detect
+and verify can never drift. The metric source **degrades to the log-based checks** when absent or
+unreachable: a momentarily-down backend can't wedge an incident open, and it can't declare a premature
+victory either.
+**Why:** the gap caught while reviewing fix-vs-escalate — detection had moved to metrics but
+verification still judged a latency fault on whether *error logs* cleared, so a still-slow service
+could be marked recovered. Verifying on the signal you detected on is the robust closure of D-005.
+**Tier policy unchanged (answers "fix or escalate"):** the action catalog still sets the tier in code
+(invariant #2) — stateless restarts auto-fix (Tier 1), stateful redis/postgres need approval (Tier 2),
+guardrail breach / unknown action / repeated verify-failure escalate to a human. Telemetry only adds
+detection/verification signals; it never routes. **Consequence:** 299 offline tests green (+9: metric
+recovery, the offline null-test encoding for the full log+metric+trace engine, shared PromQL). The
+running agent gets metric-aware recovery automatically (the dashboard launches it with the telemetry
+config; `RecoveryEvaluator` is wired with `telemetry.get("metrics")`). Trace-based recovery (verify on
+Tempo error-rate) is a later refinement; `trace_error_rate` currently verifies via the log path.
+
+
+## D-036 · 2026-06-13 · Container-down is a first-class detection signal (stateful outages don't need a log flood)
+Detection was 100% log/metric/trace-rate based, so "a dependency is down" only became a ticket if its
+consumers logged *enough* errors to trip a threshold. Two real outages don't: **redis** has one
+consumer (the worker) that retries on a slow fixed cadence (~one error every few seconds — below
+`error_rate_threshold`), and **postgres down while the auth tier is also failing** never produces a db
+error at all because requests 503 at auth before reaching the db. The poller already *knew* the
+container was down (the heartbeat prints `DOWN=postgres`), but nothing turned that fact into a
+candidate. New `ContainerDownDetector` reads the polled `SignalStore` and emits an `Anomaly` for any
+container in `cfg.container_down_services` (default `postgres`, `redis` — exactly the stateful deps the
+silence detector excludes) tagged with that dependency's **error code** (`db_unreachable` /
+`redis_unreachable`), so the correlator roots it on the same `service:unreachable` fingerprint the log
+path uses — a container-down candidate and any downstream error-rate candidate collapse into ONE
+incident (#3). It runs through the normal engine, so it inherits debounce, cooldown, and
+action-suppression (it will not alarm on the brief down-state the agent's own restart causes — #5).
+`RecoveryEvaluator` gained a root-container-up gate for `unreachable` faults: when the container-down
+candidate is the only evidence the log checks are vacuously clean, so the live signal must veto a
+premature recovery (and confirm it once the operator/agent restarts the container). The dashboard
+topology/health now reflect the live poll too — a stopped lab service renders red before an incident
+exists and clears the instant it's restarted (previously the map was incident-only, so a `docker stop`
+looked like "nothing happening"). Eval `_LiveAgent` is now poll-aware; scenario `db-down` (stop
+postgres) exercises the detector.
+**Why:** detection is pure code (invariant #1) and the down-container fact is the most deterministic
+signal there is — keying stateful-outage detection off downstream log volume was the fragile path.
+This is the robust closure of the gap behind "I stopped postgres and no ticket appeared."
+**Also hardened in the same pass (operational robustness, not new behavior):** (1) the agent's main
+tick loop now catches/logs/continues on a per-tick exception — a transient `database is locked`, a
+telemetry blip, or an LLM hiccup can no longer silently freeze detection (a wedged agent that stops
+detecting is the failure this project exists to avoid). (2) Every SQLite store opens through one
+`sre_agent/db.py` helper with **WAL + a 30s busy timeout**, so the out-of-process dashboard's reads and
+the approval path's writer connection no longer contend with the agent's writes into a lock error.
+**Consequence:** 312 offline tests green (container-down detector + correlation, root-container-up
+recovery, live-signal topology). `db-down` needs the lab up (it stops a real container).

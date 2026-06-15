@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 
 from sre_agent.config import Config
 from sre_agent.detect.base import Detector
-from sre_agent.ingest.window import SlidingWindow
 from sre_agent.models import Anomaly
+from sre_agent.telemetry.sources import LogSource
 
 
 class CrashLoopDetector(Detector):
@@ -18,11 +18,11 @@ class CrashLoopDetector(Detector):
         self.window_s = cfg.crashloop_window_s
         self.threshold = cfg.crashloop_threshold
 
-    def check(self, window: SlidingWindow, now: datetime) -> list[Anomaly]:
+    def check(self, logs: LogSource, now: datetime) -> list[Anomaly]:
         since = now - timedelta(seconds=self.window_s)
         anomalies = []
-        for service in window.services():
-            starts = [r for r in window.records(service, since) if r.event == "startup"]
+        for service in logs.services():
+            starts = [r for r in logs.records(service, since) if r.event == "startup"]
             if len(starts) >= self.threshold:
                 anomalies.append(Anomaly(
                     service=service,
