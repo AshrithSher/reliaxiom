@@ -4,6 +4,7 @@ an operator can approve/reject a proposal the running agent posted.
     python -m sre_agent.approve list
     python -m sre_agent.approve approve INC-3 --by alice@example.com
     python -m sre_agent.approve reject  INC-3 --by alice@example.com
+    python -m sre_agent.approve resolve INC-3 --by alice@example.com   # close one I fixed by hand
 """
 from __future__ import annotations
 
@@ -13,13 +14,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sre_agent.action.executor import ActionExecutor, Guardrails
+from sre_agent.action.factory import build_action_backend, build_rate_limiter
 from sre_agent.action.recovery import RecoveryEvaluator
 from sre_agent.changelog import ChangeLog
 from sre_agent.config import Config
 from sre_agent.incident.lifecycle import IncidentState
 from sre_agent.incident.manager import IncidentManager
 from sre_agent.incident.store import IncidentStore
-from sre_agent.incident.topology import LAB_TOPOLOGY
+from sre_agent.incident.topology_provider import build_topology_provider
 from sre_agent.integrations.notifications import ConsoleNotifier
 from sre_agent.integrations.ticketing import SqliteTicketStore
 
@@ -30,23 +32,33 @@ def _manager(cfg: Config) -> tuple[IncidentManager, IncidentStore]:
     changelog = ChangeLog(data_dir / "changes.db")
     mgr = IncidentManager(
         incidents, SqliteTicketStore(data_dir / "tickets.db"), ConsoleNotifier(),
-        LAB_TOPOLOGY, cfg,
-        executor=ActionExecutor(dry_run=cfg.dry_run),
-        guardrails=Guardrails(cfg.max_restarts_per_hour, changelog),
+        build_topology_provider(cfg).topology(), cfg,
+        executor=ActionExecutor(backend=build_action_backend(cfg), dry_run=cfg.dry_run),
+        guardrails=Guardrails(),
         recovery=RecoveryEvaluator(cfg), changelog=changelog,
+        ratelimiter=build_rate_limiter(cfg, changelog),
     )
     return mgr, incidents
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Approve or reject Tier-2 incident actions")
-    ap.add_argument("command", choices=["list", "approve", "reject"])
+    ap.add_argument("command", choices=["list", "approve", "reject", "resolve"])
     ap.add_argument("incident_id", nargs="?", help="e.g. INC-3")
-    ap.add_argument("--by", default="operator", help="who is approving/rejecting")
+    ap.add_argument("--by", default="operator", help="who is approving/rejecting/resolving")
     ap.add_argument("--config", help="JSON config overrides")
     ap.add_argument("--execute", action="store_true",
                     help="actually run the approved action (default: dry-run)")
     args = ap.parse_args(argv)
+
+    # Windows consoles default to cp1252, which can't encode the arrows/middots the notifier and
+    # comments print — force UTF-8 so an approve/reject never crashes mid-transition (which would
+    # leave the escalation/approval un-persisted). Mirrors main.py.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
 
     cfg = Config.load(args.config)
     if args.execute:
@@ -72,9 +84,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{args.incident_id} is not awaiting approval")
             return 1
         print(f"approved {args.incident_id}: {'ok' if result.success else 'FAILED'} — {result.detail}")
+    elif args.command == "resolve":
+        inc = mgr.manual_resolve(args.incident_id, resolver=args.by, now=now)
+        if inc is None:
+            print(f"{args.incident_id} is not human-owned (escalated/flapping) — nothing to "
+                  f"close (agent-driven incidents resolve themselves on recovery)")
+            return 1
+        print(f"resolved {args.incident_id} -> RESOLVED (closed by {args.by})")
     else:
         mgr.reject(args.incident_id, approver=args.by, now=now)
-        print(f"rejected {args.incident_id} → escalated")
+        print(f"rejected {args.incident_id} -> escalated")
     return 0
 
 

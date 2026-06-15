@@ -32,10 +32,21 @@ DETECTED → DIAGNOSING → [AWAITING_APPROVAL] → ACTING → VERIFYING → RES
 
 ## Correlation (before ticketing)
 
-Candidates arriving within the correlation window (default 90 s) that share an upstream
-dependency in the topology map are merged into one incident, attributed to the most
-upstream suspect. Example: Redis OOM → api errors + worker silence + queue stall = **one**
-incident with fingerprint `redis:oom`, not three.
+Candidates buffered over the correlation window (default 90 s) are fused by a **multi-signal
+correlation engine** (D-040): an affinity graph whose connected components each become one
+incident. Two candidates are linked by any of — same service; a **shared trace/request id**
+(the strongest causal signal, and the only edge that ignores the time window); a directional
+topology chain (one is upstream of the other — *not* a merely-shared dependency, see D-016);
+or dependency-error co-attribution (both depend on the same service whose error code appeared).
+Non-causal edges respect an adaptive window (`correlation_max_span_s`, default 300 s — cascades
+propagate over minutes).
+
+Each incident is attributed to its root in precedence order: dependency error code (e.g.
+`redis_unreachable` → redis) > a service with a coincident deploy/config change > topology
+most-upstream > the member with the most dependents. Examples: Redis OOM → api errors + worker
+silence = **one** `redis:unreachable` incident; a memory leak's `crash_loop` + `error_rate` on
+api = **one** incident (heterogeneous signals, no shared code); the log/metric/trace twins of
+one fault collapse to **one**, not three.
 
 ## Diagnosis output (structured)
 

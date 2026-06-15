@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 
 from sre_agent.config import Config
 from sre_agent.detect.base import Detector
-from sre_agent.ingest.window import SlidingWindow
 from sre_agent.models import Anomaly
+from sre_agent.telemetry.sources import LogSource
 
 
 class ErrorRateDetector(Detector):
@@ -17,11 +17,11 @@ class ErrorRateDetector(Detector):
         self.window_s = cfg.error_rate_window_s
         self.threshold = cfg.error_rate_threshold
 
-    def check(self, window: SlidingWindow, now: datetime) -> list[Anomaly]:
+    def check(self, logs: LogSource, now: datetime) -> list[Anomaly]:
         since = now - timedelta(seconds=self.window_s)
         anomalies = []
-        for service in window.services():
-            errors = window.error_records(service, since)
+        for service in logs.services():
+            errors = logs.error_records(service, since)
             if len(errors) >= self.threshold:
                 codes = _distinct_error_codes(errors)
                 anomalies.append(Anomaly(
@@ -31,6 +31,9 @@ class ErrorRateDetector(Detector):
                             f"(threshold {self.threshold})"),
                     evidence=[str(r.raw) for r in errors[-5:]],
                     error_codes=codes,
+                    # the request ids of the failing requests are the cross-service trace key
+                    # the correlator fuses on (D-040) — the same key diagnosis traces on.
+                    trace_ids=_distinct_request_ids(errors),
                 ))
         return anomalies
 
@@ -42,4 +45,15 @@ def _distinct_error_codes(errors) -> list[str]:
         code = r.raw.get("error")
         if isinstance(code, str):
             seen.setdefault(code, None)
+    return list(seen)
+
+
+def _distinct_request_ids(errors) -> list[str]:
+    """Stable-ordered distinct request ids — the per-request trace key propagated across the
+    lab's services (nginx → webapp → api → worker). Shared ids let the correlator fuse the
+    same failing requests across services without a topology or error-code link (D-040)."""
+    seen: dict[str, None] = {}
+    for r in errors:
+        if r.request_id:
+            seen.setdefault(r.request_id, None)
     return list(seen)

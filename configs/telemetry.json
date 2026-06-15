@@ -1,0 +1,8 @@
+{
+  "telemetry_metrics": "prometheus",
+  "telemetry_traces": "tempo",
+  "telemetry_logs": "tailed",
+  "prometheus_url": "http://localhost:9090",
+  "tempo_url": "http://localhost:3200",
+  "loki_url": "http://localhost:3100"
+}

@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import subprocess
 import sys
@@ -31,6 +32,9 @@ from sre_agent.ingest.tailer import Tailer
 from sre_agent.ingest.window import SlidingWindow
 from sre_agent.main import build_engine
 from sre_agent.models import IncidentCandidate
+from sre_agent.poll.adapters import build_live_pollers
+from sre_agent.poll.store import PollCycle, PollLoop, SignalStore
+from sre_agent.telemetry.adapters import build_live_telemetry_sources
 
 
 @dataclass
@@ -62,18 +66,31 @@ class _LiveAgent:
         self.window = SlidingWindow(cfg.window_max_age_s)
         self.parser = LineParser()
         self.tailer = Tailer(self.window, self.parser)
-        self.engine: DetectionEngine = build_engine(cfg, self.parser)
+        # telemetry sources are built from cfg; off by default, so log-only scenarios are
+        # unchanged. A metric/trace scenario flips them on via its extra_config.
+        self.telemetry = build_live_telemetry_sources(cfg)
+        # poll the lab's container/queue signals so the container-down detector has ground
+        # truth (a stopped stateful dependency). The pollers degrade gracefully, so running
+        # them is harmless for the log/metric scenarios that don't need them.
+        self.signals = SignalStore()
+        self._poll = PollLoop(PollCycle(build_live_pollers(cfg), self.signals),
+                              max(2.0, cfg.poll_interval_s))
+        self.engine: DetectionEngine = build_engine(
+            cfg, self.parser, telemetry=self.telemetry, signals=self.signals)
+        self.log_source = self.telemetry.get("logs") or self.window
 
     def start(self) -> None:
         self.tailer.start_docker(self.cfg.compose_dir)
+        self._poll.start()
 
     def stop(self) -> None:
         self.tailer.stop()
+        self._poll.stop()
 
     def tick(self) -> list[IncidentCandidate]:
         now = datetime.now(timezone.utc)
         self.window.prune(now)
-        return self.engine.tick(self.window, now)
+        return self.engine.tick(self.log_source, now)
 
 
 def _run(cmds: list[list[str]], cwd: str) -> None:
@@ -85,6 +102,8 @@ def _run(cmds: list[list[str]], cwd: str) -> None:
 
 def run_scenario(scenario: Scenario, cfg: Config, settle_s: float = 30.0) -> RunResult:
     result = RunResult(scenario=scenario.name, passed=False)
+    if scenario.extra_config:   # e.g. enable telemetry_metrics/telemetry_traces for this run
+        cfg = dataclasses.replace(cfg, **scenario.extra_config)
     agent = _LiveAgent(cfg)
     agent.start()
     print(f"--- scenario {scenario.name}: settling {settle_s:.0f}s on healthy traffic", flush=True)
@@ -112,7 +131,7 @@ def run_scenario(scenario: Scenario, cfg: Config, settle_s: float = 30.0) -> Run
                 if c.signal_type == scenario.expected_signal and service_match:
                     result.detected = True
                     result.time_to_detect_s = time.time() - t0
-                else:
+                elif c.signal_type not in scenario.allow_signals:
                     result.failures.append(f"unexpected candidate: {c.fingerprint()}")
 
         if not result.detected:

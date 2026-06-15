@@ -11,49 +11,74 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sre_agent.action.executor import ActionExecutor, Guardrails
+from sre_agent.action.factory import build_action_backend, build_rate_limiter
 from sre_agent.action.recovery import RecoveryEvaluator
-from sre_agent.changelog import ChangeLog
 from sre_agent.config import Config
 from sre_agent.detect.crashloop import CrashLoopDetector
 from sre_agent.detect.engine import DetectionEngine
 from sre_agent.detect.error_rate import ErrorRateDetector
 from sre_agent.detect.latency import LatencyDetector
 from sre_agent.detect.malformed import MalformedSpikeDetector
+from sre_agent.detect.metrics import (MetricErrorRatioDetector, MetricLatencyDetector,
+                                      SaturationDetector, TraceErrorDetector)
 from sre_agent.detect.queue_depth import QueueDepthDetector
 from sre_agent.detect.silence import SilenceDetector
 from sre_agent.diagnosis.context import ContextAssembler
 from sre_agent.diagnosis.diagnoser import Diagnoser
 from sre_agent.diagnosis.llm import (FallbackProvider, GeminiProvider, LLMProvider,
                                      OpenRouterProvider)
+from sre_agent.health import HealthServer
 from sre_agent.incident.lifecycle import IncidentState
 from sre_agent.incident.manager import IncidentManager
-from sre_agent.incident.store import IncidentStore
-from sre_agent.incident.topology import LAB_TOPOLOGY
+from sre_agent.incident.topology_provider import build_topology_provider
 from sre_agent.ingest.parser import LineParser
+from sre_agent.metrics import AgentMetrics
 from sre_agent.ingest.tailer import Tailer
 from sre_agent.ingest.window import SlidingWindow
 from sre_agent.integrations.notifications import ConsoleNotifier
-from sre_agent.integrations.postmortems import SqlitePostMortemStore
-from sre_agent.integrations.ticketing import SqliteTicketStore
 from sre_agent.poll.adapters import build_live_pollers
 from sre_agent.poll.store import PollCycle, PollLoop, SignalStore
+from sre_agent.state_factory import (build_changelog, build_incident_store, build_leadership,
+                                     build_local_postmortem_store, build_local_ticket_store)
+from sre_agent.telemetry.adapters import build_live_telemetry_sources
 
 
-def build_engine(cfg: Config, parser: LineParser, changelog=None) -> DetectionEngine:
-    return DetectionEngine([
+def build_engine(cfg: Config, parser: LineParser, changelog=None,
+                 telemetry: dict | None = None, signals=None) -> DetectionEngine:
+    """The log detectors always run. Metric/trace detectors are appended only when their
+    backend is enabled in config (telemetry == build_live_telemetry_sources(cfg)), so the
+    default tailed-log path is unchanged. The container-down detector is appended only when a
+    SignalStore is supplied (the agent and eval harness do; unit harnesses on hand-fed logs
+    don't), so a stopped stateful dependency tickets even with no downstream log flood."""
+    detectors = [
         ErrorRateDetector(cfg),
         LatencyDetector(cfg),
         SilenceDetector(cfg),
         CrashLoopDetector(cfg),
         QueueDepthDetector(cfg),
         MalformedSpikeDetector(cfg, parser),
-    ], cfg, changelog=changelog)
+    ]
+    if signals is not None and cfg.container_down_services:
+        from sre_agent.detect.container_down import ContainerDownDetector
+        detectors.append(ContainerDownDetector(cfg, signals))
+    telemetry = telemetry or {}
+    metrics = telemetry.get("metrics")
+    if metrics is not None:
+        detectors += [MetricErrorRatioDetector(cfg, metrics),
+                      MetricLatencyDetector(cfg, metrics),
+                      SaturationDetector(cfg, metrics)]
+    traces = telemetry.get("traces")
+    if traces is not None:
+        detectors.append(TraceErrorDetector(cfg, traces))
+    return DetectionEngine(detectors, cfg, changelog=changelog)
 
 
 def load_secrets(secrets_dir: str = ".secrets") -> None:
@@ -81,7 +106,7 @@ def _atlassian_client():
 
 
 def build_ticket_store(cfg: Config, data_dir: Path):
-    local = SqliteTicketStore(data_dir / "tickets.db")   # always the local authoritative record
+    local = build_local_ticket_store(cfg, data_dir)   # authoritative record (sqlite or postgres)
     if cfg.ticketing_backend == "jira":
         client = _atlassian_client()
         key = os.environ.get("JIRA_PROJECT_KEY")
@@ -96,8 +121,7 @@ def build_ticket_store(cfg: Config, data_dir: Path):
 
 
 def build_postmortem_store(cfg: Config, data_dir: Path):
-    local = SqlitePostMortemStore(data_dir / "postmortems.db",
-                                  markdown_dir=data_dir / "postmortems")
+    local = build_local_postmortem_store(cfg, data_dir)   # authoritative (sqlite or postgres)
     if cfg.postmortems_backend == "confluence":
         client = _atlassian_client()
         space = os.environ.get("CONFLUENCE_SPACE_KEY")
@@ -191,6 +215,12 @@ def main(argv: list[str] | None = None) -> int:
                              help="file tickets in Jira instead of the local SQLite stub")
     args_parser.add_argument("--confluence", action="store_true",
                              help="publish post-mortems to Confluence (in addition to local)")
+    args_parser.add_argument("--postgres", action="store_true",
+                             help="store all state in shared Postgres (HA) instead of local SQLite")
+    args_parser.add_argument("--ha", action="store_true",
+                             help="leader election: only the leader acts (implies --postgres)")
+    args_parser.add_argument("--health", action="store_true",
+                             help="serve /healthz + /readyz (and /metrics) on health_port")
     args = args_parser.parse_args(argv)
 
     # Windows consoles default to cp1252, which can't encode arrows/middots the agent prints —
@@ -210,6 +240,14 @@ def main(argv: list[str] | None = None) -> int:
         cfg.ticketing_backend = "jira"
     if args.confluence:
         cfg.postmortems_backend = "confluence"
+    if args.postgres or args.ha:
+        cfg.state_backend = "postgres"
+    if args.ha:
+        cfg.ha_enabled = True
+    if args.health:
+        cfg.health_enabled = True
+    if not cfg.replica_id:
+        cfg.replica_id = f"{socket.gethostname()}:{os.getpid()}"
     window = SlidingWindow(cfg.window_max_age_s)
     parser = LineParser()
     tailer = Tailer(window, parser)
@@ -220,26 +258,38 @@ def main(argv: list[str] | None = None) -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
     load_secrets()
     provider = build_provider(cfg)
-    changelog = ChangeLog(data_dir / "changes.db")
+    changelog = build_changelog(cfg, data_dir)
     postmortems = build_postmortem_store(cfg, data_dir)
     ticket_store = build_ticket_store(cfg, data_dir)
-    engine = build_engine(cfg, parser, changelog=changelog)
+    telemetry = build_live_telemetry_sources(cfg)
+    engine = build_engine(cfg, parser, changelog=changelog, telemetry=telemetry,
+                          signals=signals)
+    # detectors read logs through the LogSource SPI: in-memory window by default, Loki when
+    # telemetry_logs == "loki" (D-031). The window is always kept (diagnosis context uses it).
+    log_source = telemetry.get("logs") or window
+    if telemetry:
+        print("# telemetry: " + ", ".join(
+            f"{k}={type(v).__name__}" for k, v in telemetry.items()), file=sys.stderr)
     diagnoser = Diagnoser(provider, runs=cfg.diagnosis_runs, temperature=cfg.llm_temperature) \
         if provider is not None else None
-    assembler = ContextAssembler(LAB_TOPOLOGY, cfg, changelog=changelog, postmortems=postmortems) \
+    topology = build_topology_provider(cfg).topology()
+    assembler = ContextAssembler(topology, cfg, changelog=changelog, postmortems=postmortems) \
         if provider is not None else None
+    agent_metrics = AgentMetrics()
     manager = IncidentManager(
-        IncidentStore(data_dir / "incidents.db"),
+        build_incident_store(cfg, data_dir),
         ticket_store,
-        ConsoleNotifier(), LAB_TOPOLOGY, cfg,
+        ConsoleNotifier(), topology, cfg,
         diagnoser=diagnoser, assembler=assembler,
-        executor=ActionExecutor(dry_run=cfg.dry_run),
-        guardrails=Guardrails(cfg.max_restarts_per_hour, changelog),
-        recovery=RecoveryEvaluator(cfg),
+        executor=ActionExecutor(backend=build_action_backend(cfg), dry_run=cfg.dry_run),
+        guardrails=Guardrails(),
+        recovery=RecoveryEvaluator(cfg, metrics=telemetry.get("metrics")),
         changelog=changelog, postmortems=postmortems,
+        ratelimiter=build_rate_limiter(cfg, changelog),
+        metrics=agent_metrics,
     )
     print(f"# diagnosis: {'enabled (' + cfg.llm_provider + ')' if provider else 'disabled (no API key)'}; "
-          f"actions: {'DRY-RUN' if cfg.dry_run else 'LIVE EXECUTE'}", file=sys.stderr)
+          f"actions: {'DRY-RUN' if cfg.dry_run else 'LIVE EXECUTE'} via {cfg.action_backend}", file=sys.stderr)
 
     if args.stdin:
         tailer.start_stream(sys.stdin)
@@ -248,8 +298,30 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_poll:
             poll_loop = PollLoop(PollCycle(build_live_pollers(cfg), signals), cfg.poll_interval_s)
             poll_loop.start()
+    # HA coordination: only the leader drives the incident lifecycle. Without --ha this is a
+    # no-op single-node leader, so the default path is byte-for-byte the old behavior.
+    leadership = build_leadership(cfg)
+    # heartbeat for the dead-man's switch (liveness) — k8s restarts us if the loop wedges.
+    hb = {"last_tick": time.monotonic(), "leader": False, "was_leader": None}
+
+    def _alive() -> bool:
+        return (time.monotonic() - hb["last_tick"]) < max(30.0, cfg.tick_interval_s * 6)
+
+    def _ready() -> bool:
+        # ready = doing our job: actively leading (HA) or the sole node, and not wedged.
+        return _alive() and (hb["leader"] or not cfg.ha_enabled)
+
+    health = None
+    if cfg.health_enabled:
+        health = HealthServer(cfg.health_port, liveness=_alive, readiness=_ready)
+        health.register("/metrics",
+                        lambda: (200, "text/plain; version=0.0.4", agent_metrics.render()))
+        health.start()
+        print(f"# health: /healthz /readyz /metrics on :{cfg.health_port}", file=sys.stderr)
+
     print(f"# sre-agent watching ({'stdin' if args.stdin else cfg.compose_dir}); "
           f"debounce={cfg.debounce_s:.0f}s correlation_window={cfg.correlation_window_s:.0f}s"
+          f" state={cfg.state_backend}{' HA replica=' + cfg.replica_id if cfg.ha_enabled else ''}"
           f"{' [MAINTENANCE]' if cfg.maintenance_mode else ''}", file=sys.stderr)
 
     incident_store = manager._istore
@@ -257,27 +329,51 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while True:
             time.sleep(cfg.tick_interval_s)
-            now = datetime.now(timezone.utc)
-            window.prune(now)
-            for candidate in engine.tick(window, now):
-                print(f"# candidate {candidate.fingerprint()} — {candidate.detail}", file=sys.stderr)
-                manager.ingest(candidate, now)
-            # one full agent cycle: create incidents, diagnose+act new ones, verify in-flight
-            manager.step(window, signals.latest(), now)
+            try:
+                now = datetime.now(timezone.utc)
+                window.prune(now)   # bound memory on every replica (tailer keeps it warm)
+                hb["leader"] = leadership.acquire()
+                if hb["leader"] != hb["was_leader"]:
+                    role = "LEADER — driving incidents" if hb["leader"] else "standby — warm"
+                    print(f"# [HA] {cfg.replica_id} now {role}", file=sys.stderr)
+                    hb["was_leader"] = hb["leader"]
+                # Only the leader detects→ingests→acts. Standbys keep tailing/polling (window
+                # warm) so failover is fast; their shared state means no re-acting (D-009).
+                if hb["leader"]:
+                    for candidate in engine.tick(log_source, now):
+                        print(f"# candidate {candidate.fingerprint()} — {candidate.detail}",
+                              file=sys.stderr)
+                        agent_metrics.on_candidate(candidate.signal_type)
+                        manager.ingest(candidate, now)
+                    # one full cycle: create incidents, diagnose+act new ones, verify in-flight
+                    manager.step(window, signals.latest(), now)
+                agent_metrics.heartbeat(hb["leader"])
+                hb["last_tick"] = time.monotonic()
 
-            if time.monotonic() - last_status >= cfg.status_interval_s:
-                _print_status(incident_store, parser, window, signals, cfg, now)
-                last_status = time.monotonic()
+                if time.monotonic() - last_status >= cfg.status_interval_s:
+                    _print_status(incident_store, parser, window, signals, cfg, now)
+                    last_status = time.monotonic()
 
-            if not tailer.alive and not args.stdin:
-                print("# log stream ended; exiting", file=sys.stderr)
-                return 1
+                if not tailer.alive and not args.stdin:
+                    print("# log stream ended; exiting", file=sys.stderr)
+                    return 1
+            except KeyboardInterrupt:
+                raise   # Ctrl+C is a clean shutdown, not a tick error
+            except Exception:  # noqa: BLE001
+                # One bad tick — a locked DB, a telemetry blip, an LLM hiccup — must never
+                # freeze detection. Log it and keep ticking; a silently wedged agent that
+                # stops detecting is the failure this whole project exists to avoid.
+                print("# tick error (continuing):", file=sys.stderr)
+                traceback.print_exc()
     except KeyboardInterrupt:
         return 0
     finally:
         tailer.stop()
         if poll_loop is not None:
             poll_loop.stop()
+        leadership.release()
+        if health is not None:
+            health.stop()
 
 
 if __name__ == "__main__":

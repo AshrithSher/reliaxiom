@@ -17,6 +17,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from sre_agent.db import connect
+
 
 class TicketStatus(str, Enum):
     OPEN = "Open"
@@ -134,8 +136,7 @@ class CompositeTicketStore(TicketStore):
 
 class SqliteTicketStore(TicketStore):
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._conn = connect(path)
         self._init_schema()
 
     def _init_schema(self) -> None:

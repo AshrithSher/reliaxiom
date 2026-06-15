@@ -29,7 +29,7 @@ from sre_agent.dashboard.metrics import compute_metrics
 from sre_agent.incident.lifecycle import IncidentState
 from sre_agent.incident.models import Incident
 from sre_agent.incident.store import IncidentStore
-from sre_agent.incident.topology import LAB_TOPOLOGY
+from sre_agent.incident.topology_provider import build_topology_provider
 from sre_agent.integrations.postmortems import SqlitePostMortemStore
 from sre_agent.integrations.ticketing import SqliteTicketStore
 from sre_agent.main import build_postmortem_store, build_ticket_store, load_secrets
@@ -116,20 +116,26 @@ def _incident_summary(inc: Incident) -> dict:
                               if inc.approval_deadline else None),
         "active": inc.state in _ACTIVE_STATES,
         "awaiting_approval": inc.state is IncidentState.AWAITING_APPROVAL,
+        # escalated/flapping incidents are human-owned: the agent won't auto-close them, so the
+        # operator who fixed it out-of-band needs an explicit Resolve action.
+        "human_resolvable": inc.state in (IncidentState.ESCALATED, IncidentState.FLAPPING),
         "jira_url": _jira_url(inc.ticket_id),
     }
 
 
-def _topology(active: list[Incident]) -> dict:
-    """Nodes/edges from the lab topology, each node tagged healthy / affected / root."""
-    edges = []
-    nodes: set[str] = set()
-    for svc, deps in LAB_TOPOLOGY._direct.items():   # noqa: SLF001 — read-only projection
-        nodes.add(svc)
-        for dep in deps:
-            nodes.add(dep)
-            edges.append({"source": svc, "target": dep})
-    roots = {i.root_service for i in active}
+def _topology(active: list[Incident], down: set[str] | None = None) -> dict:
+    """Nodes/edges from the lab topology, each node tagged healthy / affected / root.
+
+    A node is shown red ('root') if it is the root of an active incident OR its container is
+    currently down per the live poll — so a stopped service surfaces immediately, before
+    detection has debounced an incident, and clears the instant the operator restarts it (the
+    poll sees it 'running' again). Without this the map is driven purely by incidents and a
+    down container with no incident yet renders deceptively green."""
+    down = down or set()
+    tmap = build_topology_provider(_cfg()).topology()
+    nodes = set(tmap.services())
+    edges = [{"source": svc, "target": dep} for svc, dep in tmap.edges()]
+    roots = {i.root_service for i in active} | (down & nodes)
     affected: set[str] = set()
     for i in active:
         affected.update(i.services)
@@ -140,6 +146,14 @@ def _topology(active: list[Incident]) -> dict:
                   for n in sorted(nodes)],
         "edges": edges,
     }
+
+
+def _down_containers() -> set[str]:
+    """Lab services whose container is not 'running' per the dashboard's own poll."""
+    snap = _signals.latest()
+    if snap is None:
+        return set()
+    return {name for name, cs in snap.containers.items() if cs.status != "running"}
 
 
 def _signals_view() -> dict:
@@ -162,12 +176,16 @@ def _build_state() -> dict:
     active = [i for i in incidents if i.state in _ACTIVE_STATES]
     postmortems = SqlitePostMortemStore(_data_dir() / "postmortems.db").all()
     metrics = compute_metrics(postmortems, store.find_active())
-    degraded = bool(active)
+    topology = _topology(active, _down_containers())
+    # a stopped lab container is 'degraded' even before an incident exists — the live poll is
+    # ground truth, so the header dot can't read green while postgres is down.
+    down_in_topology = any(n["health"] == "root" for n in topology["nodes"])
+    degraded = bool(active) or down_in_topology
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
         "health": "degraded" if degraded else "healthy",
         "incidents": [_incident_summary(i) for i in incidents],
-        "topology": _topology(active),
+        "topology": topology,
         "metrics": metrics,
         "signals": _signals_view(),
         "agent": {**_runner.status(), "log_tail": _runner.logs()[-40:]},
@@ -282,6 +300,14 @@ def reject(incident_id: str, by: str = "operator") -> JSONResponse:
     ticket_store, postmortems = _stores_for_approval(cfg)
     return JSONResponse(
         control.reject_incident(cfg, ticket_store, postmortems, incident_id, by))
+
+
+@app.post("/api/incident/{incident_id}/resolve")
+def resolve_incident(incident_id: str, by: str = "operator") -> JSONResponse:
+    cfg = _cfg()
+    ticket_store, postmortems = _stores_for_approval(cfg)
+    return JSONResponse(
+        control.resolve_incident(cfg, ticket_store, postmortems, incident_id, by))
 
 
 # --- live gauges: the dashboard's own best-effort poll (never touches the agent) ----------

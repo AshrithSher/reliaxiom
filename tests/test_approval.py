@@ -7,6 +7,7 @@ from datetime import timedelta
 import pytest
 
 from sre_agent.action.catalog import Tier
+from sre_agent.action.backend import DockerActionBackend
 from sre_agent.action.executor import ActionExecutor, Guardrails
 from sre_agent.action.recovery import RecoveryEvaluator
 from sre_agent.changelog import ChangeLog
@@ -45,8 +46,8 @@ def build(tmp_path):
     changelog = ChangeLog(tmp_path / "c.db")
     runner = FakeRunner()
     mgr = IncidentManager(incidents, tickets, notifier, LAB_TOPOLOGY, c,
-                          executor=ActionExecutor(runner=runner, dry_run=False),
-                          guardrails=Guardrails(c.max_restarts_per_hour, changelog),
+                          executor=ActionExecutor(backend=DockerActionBackend(runner=runner), dry_run=False),
+                          guardrails=Guardrails(),
                           recovery=RecoveryEvaluator(c), changelog=changelog)
     return mgr, tickets, incidents, notifier, runner
 
@@ -129,6 +130,56 @@ def test_step_routes_approval_tier_to_request(tmp_path):
     mgr._progress(inc, window=None, signals=None, now=at(10))
     assert incidents.get("INC-1").state is IncidentState.AWAITING_APPROVAL
     assert runner.calls == []
+
+
+def test_manual_resolve_closes_an_escalated_incident(tmp_path):
+    # the human fix loop: reject a Tier-2 → ESCALATED, operator fixes it out-of-band, then
+    # closes the ticket from the UI/CLI. The agent never auto-closes a handed-off incident,
+    # so this is the only path that resolves it.
+    mgr, tickets, incidents, notifier, runner = build(tmp_path)
+    inc = diagnosing_incident(tickets, incidents)
+    mgr.request_approval(inc, approval_dx(), now=at(10))
+    mgr.reject("INC-1", approver="bob@example.com", now=at(60))
+    assert incidents.get("INC-1").state is IncidentState.ESCALATED
+
+    closed = mgr.manual_resolve("INC-1", resolver="bob@example.com", now=at(120))
+    assert closed is not None
+    stored = incidents.get("INC-1")
+    assert stored.state is IncidentState.RESOLVED
+    assert stored.resolved_at is not None
+    assert tickets.get(inc.ticket_id).status is TicketStatus.RESOLVED
+    comments = " ".join(c.body for c in tickets.get(inc.ticket_id).comments)
+    assert "manually resolved by bob@example.com" in comments
+    assert runner.calls == []                          # closure runs no remediation
+    assert notifier.sent[-1].kind == "resolved"
+
+
+def test_manual_resolve_closes_a_flapping_incident(tmp_path):
+    mgr, tickets, incidents, _, _ = build(tmp_path)
+    ticket = tickets.create(fingerprint="redis:unreachable", title="x", services=["worker"],
+                            fault_type="unreachable", severity="High", evidence="x", now=T0)
+    inc = Incident(id="INC-7", fingerprint="redis:unreachable", ticket_id=ticket.id,
+                   state=IncidentState.FLAPPING, root_service="redis", services=["worker"],
+                   fault_type="unreachable", severity="High", first_seen=T0, updated_at=T0)
+    incidents.save(inc)
+    assert mgr.manual_resolve("INC-7", resolver="carol", now=at(30)) is not None
+    assert incidents.get("INC-7").state is IncidentState.RESOLVED
+
+
+def test_manual_resolve_is_a_noop_on_agent_owned_states(tmp_path):
+    # an incident the agent is still working (awaiting approval / verifying) must NOT be
+    # closeable by the manual path — that would race the agent's own lifecycle.
+    mgr, tickets, incidents, _, runner = build(tmp_path)
+    inc = diagnosing_incident(tickets, incidents)
+    mgr.request_approval(inc, approval_dx(), now=at(10))   # → AWAITING_APPROVAL
+    assert mgr.manual_resolve("INC-1", resolver="eve", now=at(20)) is None
+    assert incidents.get("INC-1").state is IncidentState.AWAITING_APPROVAL
+    assert runner.calls == []
+
+
+def test_manual_resolve_unknown_incident_returns_none(tmp_path):
+    mgr, *_ = build(tmp_path)
+    assert mgr.manual_resolve("INC-404", resolver="eve", now=at(20)) is None
 
 
 class _StubAssembler:

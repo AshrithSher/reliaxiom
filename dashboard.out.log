@@ -1,0 +1,222 @@
+INFO:     Started server process [25852]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:52617 - "GET /api/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61792 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61792 - "GET /api/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61792 - "GET /api/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65079 - "GET /api/faults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65079 - "GET /api/faults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55815 - "GET /api/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52161 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52161 - "GET /api/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52161 - "GET /api/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58700 - "GET /api/faults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58700 - "GET /api/faults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58700 - "POST /api/agent/start HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63214 - "GET /api/incident/HELP-31 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65319 - "GET /api/incident/HELP-30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58153 - "POST /api/incident/HELP-30/approve HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59591 - "GET /api/incident/HELP-31 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59591 - "POST /api/incident/HELP-31/reject HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 415, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 62, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\applications.py", line 1159, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\routing.py", line 134, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\routing.py", line 120, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\routing.py", line 674, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\routing.py", line 330, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\concurrency.py", line 34, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\anyio\to_thread.py", line 63, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        func, args, abandon_on_cancel=abandon_on_cancel, limiter=limiter
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2518, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1002, in run
+    result = context.run(func, *args)
+  File "C:\Mine\Concave\SRE\sre_agent\dashboard\server.py", line 303, in reject
+    control.reject_incident(cfg, ticket_store, postmortems, incident_id, by))
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\dashboard\control.py", line 181, in reject_incident
+    mgr.reject(incident_id, approver=approver, now=now)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\incident\manager.py", line 250, in reject
+    self._escalate(inc, now, f"action rejected by {approver}")
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\incident\manager.py", line 288, in _escalate
+    self._notify("escalated", incident, reason)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\incident\manager.py", line 390, in _notify
+    self._notifier.post(Notification(
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+        kind=kind, incident_id=inc.id, ticket_id=inc.ticket_id, severity=inc.severity,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        title=f"{inc.root_service} {inc.fault_type}", body=body[:200]))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\integrations\notifications.py", line 42, in post
+    print(line, flush=True)
+    ~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ashri\AppData\Local\Programs\Python\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 48: character maps to <undefined>
+INFO:     127.0.0.1:64605 - "GET /api/incident/HELP-31 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64605 - "POST /api/incident/HELP-31/reject HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\uvicorn\protocols\http\h11_impl.py", line 415, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        self.scope, self.receive, self.send
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\uvicorn\middleware\proxy_headers.py", line 62, in __call__
+    return await self.app(scope, receive, send)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\applications.py", line 1159, in __call__
+    await super().__call__(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\applications.py", line 90, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\middleware\errors.py", line 186, in __call__
+    raise exc
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\middleware\errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\routing.py", line 660, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\routing.py", line 680, in app
+    await route.handle(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\routing.py", line 276, in handle
+    await self.app(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\routing.py", line 134, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\routing.py", line 120, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\routing.py", line 674, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    )
+    ^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\fastapi\routing.py", line 330, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\starlette\concurrency.py", line 34, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\anyio\to_thread.py", line 63, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        func, args, abandon_on_cancel=abandon_on_cancel, limiter=limiter
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 2518, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1002, in run
+    result = context.run(func, *args)
+  File "C:\Mine\Concave\SRE\sre_agent\dashboard\server.py", line 303, in reject
+    control.reject_incident(cfg, ticket_store, postmortems, incident_id, by))
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\dashboard\control.py", line 181, in reject_incident
+    mgr.reject(incident_id, approver=approver, now=now)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\incident\manager.py", line 250, in reject
+    self._escalate(inc, now, f"action rejected by {approver}")
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\incident\manager.py", line 288, in _escalate
+    self._notify("escalated", incident, reason)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\incident\manager.py", line 390, in _notify
+    self._notifier.post(Notification(
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+        kind=kind, incident_id=inc.id, ticket_id=inc.ticket_id, severity=inc.severity,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        title=f"{inc.root_service} {inc.fault_type}", body=body[:200]))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Mine\Concave\SRE\sre_agent\integrations\notifications.py", line 42, in post
+    print(line, flush=True)
+    ~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ashri\AppData\Local\Programs\Python\Python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 48: character maps to <undefined>
+INFO:     127.0.0.1:63031 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63031 - "GET /api/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63031 - "GET /api/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65427 - "GET /api/faults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65427 - "GET /api/faults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50622 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50622 - "GET /api/state HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50622 - "GET /api/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64962 - "GET /api/faults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64962 - "GET /api/faults HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60872 - "POST /api/agent/stop HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60872 - "POST /api/control/reset HTTP/1.1" 200 OK

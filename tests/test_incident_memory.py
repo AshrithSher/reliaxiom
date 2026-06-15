@@ -3,6 +3,7 @@ diagnosed with the prior post-mortem in its prompt (incident memory). Spans mana
 assembler + post-mortem store; a capturing provider lets us inspect the actual prompt."""
 from datetime import timedelta
 
+from sre_agent.action.backend import DockerActionBackend
 from sre_agent.action.executor import ActionExecutor, Guardrails
 from sre_agent.action.recovery import RecoveryEvaluator
 from sre_agent.changelog import ChangeLog
@@ -67,8 +68,8 @@ def test_second_occurrence_is_diagnosed_with_prior_postmortem(tmp_path):
     mgr = IncidentManager(incidents, tickets, InMemoryNotifier(), LAB_TOPOLOGY, cfg,
                           diagnoser=Diagnoser(provider, runs=1),
                           assembler=ContextAssembler(LAB_TOPOLOGY, cfg, postmortems=pms),
-                          executor=ActionExecutor(runner=Runner(), dry_run=False),
-                          guardrails=Guardrails(cfg.max_restarts_per_hour, changelog),
+                          executor=ActionExecutor(backend=DockerActionBackend(runner=Runner()), dry_run=False),
+                          guardrails=Guardrails(),
                           recovery=RecoveryEvaluator(cfg), changelog=changelog, postmortems=pms)
 
     # --- first occurrence: diagnose → act → resolve (writes a post-mortem) ---

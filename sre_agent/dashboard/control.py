@@ -16,13 +16,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sre_agent.action.executor import ActionExecutor, Guardrails
+from sre_agent.action.factory import build_action_backend, build_rate_limiter
 from sre_agent.action.recovery import RecoveryEvaluator
 from sre_agent.changelog import ChangeLog
 from sre_agent.config import Config
 from sre_agent.incident.lifecycle import IncidentState
 from sre_agent.incident.manager import IncidentManager
 from sre_agent.incident.store import IncidentStore
-from sre_agent.incident.topology import LAB_TOPOLOGY
+from sre_agent.incident.topology_provider import build_topology_provider
 from sre_agent.integrations.notifications import ConsoleNotifier
 
 
@@ -158,10 +159,11 @@ def _approval_manager(cfg: Config, ticket_store, postmortems) -> IncidentManager
     changelog = ChangeLog(data_dir / "changes.db")
     return IncidentManager(
         IncidentStore(data_dir / "incidents.db"), ticket_store, ConsoleNotifier(),
-        LAB_TOPOLOGY, cfg,
-        executor=ActionExecutor(dry_run=False),
-        guardrails=Guardrails(cfg.max_restarts_per_hour, changelog),
-        recovery=RecoveryEvaluator(cfg), changelog=changelog, postmortems=postmortems)
+        build_topology_provider(cfg).topology(), cfg,
+        executor=ActionExecutor(backend=build_action_backend(cfg), dry_run=False),
+        guardrails=Guardrails(),
+        recovery=RecoveryEvaluator(cfg), changelog=changelog, postmortems=postmortems,
+        ratelimiter=build_rate_limiter(cfg, changelog))
 
 
 def approve_incident(cfg: Config, ticket_store, postmortems, incident_id: str,
@@ -180,3 +182,16 @@ def reject_incident(cfg: Config, ticket_store, postmortems, incident_id: str,
     now = datetime.now(timezone.utc)
     mgr.reject(incident_id, approver=approver, now=now)
     return {"ok": True, "detail": f"{incident_id} rejected → escalated"}
+
+
+def resolve_incident(cfg: Config, ticket_store, postmortems, incident_id: str,
+                     resolver: str) -> dict:
+    """Human closure for an escalated/flapping incident the operator fixed out-of-band — the
+    'I fixed it myself, close the ticket' action the UI was missing. The agent never auto-closes
+    a handed-off incident, so this is the only way one leaves the board once escalated."""
+    mgr = _approval_manager(cfg, ticket_store, postmortems)
+    now = datetime.now(timezone.utc)
+    inc = mgr.manual_resolve(incident_id, resolver=resolver, now=now)
+    if inc is None:
+        return {"ok": False, "error": f"{incident_id} is not escalated/flapping — nothing to close"}
+    return {"ok": True, "detail": f"{incident_id} resolved by {resolver}"}

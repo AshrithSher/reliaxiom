@@ -18,10 +18,11 @@ from sre_agent.models import IncidentCandidate
 T0 = datetime(2026, 6, 12, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def cand(service, signal, codes=None, at_s=0.0):
+def cand(service, signal, codes=None, at_s=0.0, traces=None):
     return IncidentCandidate(
         services=[service], signal_type=signal, detail=f"{service} {signal}",
         first_seen=T0, confirmed_at=T0 + timedelta(seconds=at_s), error_codes=codes or [],
+        trace_ids=traces or [],
     )
 
 
@@ -79,6 +80,19 @@ def test_cascade_collapses_to_single_ticket(ctx):
     assert created[0].fingerprint == "redis:unreachable"
     assert set(created[0].services) == {"api", "worker"}
     assert len(tickets.list_open()) == 1   # NOT two
+
+
+def test_multisignal_same_service_fault_is_one_ticket(ctx):
+    # the D-014 break, end-to-end: a memory leak trips crash_loop AND error_rate on api with
+    # no shared error code. The old priority cascade opened two tickets; the multi-signal
+    # engine collapses them into one (P1.1 / D-040).
+    mgr, tickets, *_ = ctx
+    mgr.ingest(cand("api", "crash_loop"), now=T0)
+    mgr.ingest(cand("api", "error_rate", at_s=1), now=T0 + timedelta(seconds=1))
+    created = mgr.tick(now=mature(10))
+    assert len(created) == 1
+    assert len(tickets.list_open()) == 1   # NOT two
+    assert set(created[0].services) == {"api"}
 
 
 # --- dedup ----------------------------------------------------------------------

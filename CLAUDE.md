@@ -27,10 +27,18 @@ design decision in [DECISIONS.md](DECISIONS.md).
 - All integrations (ticketing, notifications, post-mortems) go through interfaces defined
   in the integration layer. Local stubs (SQLite ticket store, markdown post-mortems,
   console notifications) are the default; real JIRA/Confluence/Teams are late-stage swaps.
-- Incident state is persisted (SQLite). The agent must survive a restart mid-incident
-  without re-executing actions — actions check current reality before acting (idempotency).
+- Incident state is persisted behind interfaces (`state_backend`): SQLite per-host by default,
+  shared Postgres for HA (D-041). The agent must survive a restart — and, on the HA path, a whole
+  replica dying — mid-incident without re-executing actions: actions check current reality before
+  acting (idempotency), and only the elected leader acts.
 - Every fault scenario added to the chaos injector gets a matching eval-harness scenario
   in the same PR. No detector or action ships without a scenario that exercises it.
+- The agent is self-monitored (D-042): lifecycle changes emit Prometheus metrics on `/metrics` and
+  the tick loop stamps a dead-man's-switch heartbeat. New lifecycle/escalation paths should record
+  the matching metric; `stream_blind` is an agent-health page, never a lab ticket.
+- New persisted state goes through a store interface with both a SQLite and a Postgres impl (reuse
+  the row↔model mapper across both so they can't drift), exercised by the parametrized contract
+  test in `tests/test_pg_stores.py`.
 - Timestamps are UTC ISO-8601 everywhere. Fingerprints are `service:fault_type` strings.
 
 ## Testing

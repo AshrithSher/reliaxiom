@@ -7,14 +7,14 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from sre_agent.db import connect
 from sre_agent.incident.lifecycle import IncidentState
 from sre_agent.incident.models import Incident
 
 
 class IncidentStore:
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._conn = connect(path)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS incidents (

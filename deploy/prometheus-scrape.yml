@@ -1,0 +1,19 @@
+# Scrape config snippet — add under prometheus.yml `scrape_configs:` so the agent is monitored
+# like any other production service (Maturity 11 / VISION §6). The agent exposes /metrics on
+# health_port (default 9108) when run with --health. In HA, list every replica (or use k8s
+# service discovery, below); sre_leader distinguishes the active one.
+scrape_configs:
+  - job_name: sre-agent
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "host.docker.internal:9108"   # replicaA
+          # - "host.docker.internal:9109" # replicaB (HA)
+
+  # In Kubernetes, prefer pod discovery over static targets:
+  # - job_name: sre-agent
+  #   kubernetes_sd_configs: [{role: pod}]
+  #   relabel_configs:
+  #     - source_labels: [__meta_kubernetes_pod_label_app]
+  #       regex: sre-agent
+  #       action: keep

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sre_agent.action.catalog import Tier, resolve
+from sre_agent.action.ratelimit import SqliteRateLimiter
 from sre_agent.changelog import ChangeLogEntry
 from sre_agent.config import Config
 from sre_agent.incident.correlation import CorrelationGroup, Correlator
@@ -50,12 +51,13 @@ class IncidentManager:
                  diagnoser: "Diagnoser | None" = None,
                  assembler: "ContextAssembler | None" = None,
                  executor=None, guardrails=None, recovery=None, changelog=None,
-                 postmortems=None) -> None:
+                 postmortems=None, ratelimiter=None, metrics=None) -> None:
         self._istore = incident_store
         self._tickets = ticket_store
         self._notifier = notifier
         self._topology = topology
-        self._correlator = Correlator(topology)
+        self._correlator = Correlator(topology, max_span_s=cfg.correlation_max_span_s,
+                                      change_window_s=cfg.change_coincidence_window_s)
         self._cfg = cfg
         self._diagnoser = diagnoser
         self._assembler = assembler
@@ -64,11 +66,31 @@ class IncidentManager:
         self._recovery = recovery
         self._changelog = changelog
         self._postmortems = postmortems
+        from sre_agent.metrics import NullMetrics
+        self._metrics = metrics or NullMetrics()
+        # The restart cap is enforced atomically by the limiter, not Guardrails. Default it
+        # from the change-log DB so the cap+tag stay in one store; production wiring injects
+        # an explicit one (and later a Postgres-backed one for multi-host fleets).
+        self._ratelimiter = ratelimiter
+        if self._ratelimiter is None and changelog is not None:
+            self._ratelimiter = SqliteRateLimiter(cfg.max_restarts_per_hour, changelog.path)
         self._pending: list[tuple[datetime, IncidentCandidate]] = []
 
     # --- ingestion / time --------------------------------------------------------
     def ingest(self, candidate: IncidentCandidate, now: datetime) -> None:
+        # stream_blind is an AGENT-health signal, not a lab incident (D-013): the agent has gone
+        # blind (dead tailer / stopped lab / Docker hiccup). Route it straight to an agent-health
+        # page + metric — never buffer/correlate/ticket it as a service fault.
+        if candidate.signal_type == "stream_blind":
+            self._agent_health_alert(candidate)
+            return
         self._pending.append((now, candidate))
+
+    def _agent_health_alert(self, candidate: IncidentCandidate) -> None:
+        self._metrics.on_stream_blind()
+        self._notifier.post(Notification(
+            kind="agent_health", incident_id="_stream", ticket_id=None, severity="High",
+            title="agent blind — stream_blind", body=candidate.detail[:200]))
 
     def tick(self, now: datetime) -> list[Incident]:
         """Flush matured candidates once the oldest has aged past the correlation window,
@@ -85,11 +107,21 @@ class IncidentManager:
         self._pending.clear()
 
         results: list[Incident] = []
-        for group in self._correlator.correlate(batch):
+        for group in self._correlator.correlate(batch, change_events=self._recent_changes(now),
+                                                now=now):
             inc = self._handle_group(group, now)
             if inc is not None:
                 results.append(inc)
         return results
+
+    def _recent_changes(self, now: datetime):
+        """Non-agent deploy/config changes shortly before now — the correlator uses them to
+        attribute a coincident cascade to the service that just changed (D-040). Agent actions
+        are excluded: they are suppressed by detection (#5), not a fault root."""
+        if self._changelog is None:
+            return None
+        since = now - timedelta(seconds=self._cfg.change_coincidence_window_s)
+        return [e for e in self._changelog.recent(since, now) if e.actor != "sre-agent"]
 
     # --- diagnosis (M3) ----------------------------------------------------------
     def diagnose(self, incident: Incident, window: "SlidingWindow", now: "_dt",
@@ -106,8 +138,11 @@ class IncidentManager:
         verifier = self._assembler.make_verifier(system + "\n" + user)
         # the restart target is the correlated root_service, decided by code — never the
         # model's symptom-service guess (keeps a stateful Tier-2 restart from downgrading)
+        import time as _t
+        _t0 = _t.monotonic()
         diagnosis = self._diagnoser.diagnose(system=system, user=user, verify_evidence=verifier,
                                              restart_target=incident.root_service)
+        self._metrics.on_diagnosis(_t.monotonic() - _t0, not diagnosis.provider_unavailable)
 
         if incident.state is IncidentState.DETECTED:
             incident.transition(IncidentState.DIAGNOSING, now)   # may be a re-diagnose (retry)
@@ -183,12 +218,18 @@ class IncidentManager:
             self._escalate(incident, now, f"guardrail blocked {action.action_id}: {decision.reason}")
             return None
         target = action.params.get("service") or incident.root_service
+        # Atomically enforce the per-service restart cap AND write the #5 change-log tag in one
+        # transaction (tag BEFORE executing, so detection ignores the transient we cause). This
+        # is the fleet-safe replacement for the old read-then-act cap; a blocked cap escalates.
+        consumed = self._ratelimiter.try_consume(action.action_id, target, now,
+                                                 detail=str(action.params))
+        if not consumed.allowed:
+            self._escalate(incident, now,
+                           f"guardrail blocked {action.action_id}: {consumed.reason}")
+            return None
         incident.transition(IncidentState.ACTING, now)
-        # tag BEFORE executing, so detection ignores the transient our action causes (#5)
-        self._changelog.record(ChangeLogEntry(ts=now, actor="sre-agent", service=target,
-                                              change_type=action.action_id,
-                                              detail=str(action.params)))
         result = self._executor.execute(action, now)
+        self._metrics.on_action(action.action_id, result.success)
         incident.action_taken = f"{action.action_id} {action.params}"
         self._comment(incident, f"action taken: {action.action_id} {action.params} → "
                       f"{'ok' if result.success else 'FAILED'} ({result.detail})", now)
@@ -280,6 +321,7 @@ class IncidentManager:
 
     def _escalate(self, incident: Incident, now: "_dt", reason: str) -> None:
         incident.transition(IncidentState.ESCALATED, now)
+        self._metrics.on_escalated()
         if incident.ticket_id:
             self._tickets.set_status(incident.ticket_id, TicketStatus.ESCALATED, now=now)
             self._tickets.assign(incident.ticket_id, _ONCALL, now=now)
@@ -298,10 +340,36 @@ class IncidentManager:
         for state in _RESOLVE_PATH[inc.state]:
             inc.transition(state, now)
         self._istore.save(inc)
+        self._metrics.on_resolved(((inc.resolved_at or now) - inc.first_seen).total_seconds())
         if inc.ticket_id:
             self._tickets.set_status(inc.ticket_id, TicketStatus.RESOLVED, now=now)
             self._tickets.add_comment(inc.ticket_id, author="agent", body=comment, now=now)
         self._notify("resolved", inc, comment)
+        self._write_postmortem(inc, "resolved", now)
+        return inc
+
+    def manual_resolve(self, incident_id: str, resolver: str, now: "_dt") -> Incident | None:
+        """Human closure for an incident the agent handed off. ESCALATED (rejected / timed out
+        / guardrail / chronic flap) and FLAPPING incidents are human-owned: the agent never
+        auto-closes them (that's why a manual `docker start redis` after a reject doesn't move
+        the ticket on its own). This is the person who fixed it out-of-band telling the system
+        'I fixed it, close it.' Agent-driven incidents still resolve through the verify loop —
+        this path is only for the states the agent has stepped away from, so it returns None
+        (a no-op) for anything else rather than racing the agent's own lifecycle."""
+        inc = self._istore.get(incident_id)
+        if inc is None:
+            return None
+        if inc.state not in (IncidentState.ESCALATED, IncidentState.FLAPPING):
+            return None
+        inc.transition(IncidentState.RESOLVED, now)
+        self._istore.save(inc)
+        if inc.ticket_id:
+            self._tickets.set_status(inc.ticket_id, TicketStatus.RESOLVED, now=now)
+            self._tickets.add_comment(
+                inc.ticket_id, author=resolver,
+                body=f"manually resolved by {resolver} — fixed out-of-band, closed by a human",
+                now=now)
+        self._notify("resolved", inc, f"manually resolved by {resolver}")
         self._write_postmortem(inc, "resolved", now)
         return inc
 
@@ -356,6 +424,7 @@ class IncidentManager:
             first_seen=first_seen, updated_at=now,
         )
         self._istore.save(inc)
+        self._metrics.on_incident_created(severity, (now - first_seen).total_seconds())
         self._notify("created", inc, self._summary(group))
         return inc
 

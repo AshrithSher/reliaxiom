@@ -4,8 +4,8 @@ from datetime import datetime
 
 from sre_agent.config import Config
 from sre_agent.detect.base import Detector
-from sre_agent.ingest.window import SlidingWindow
 from sre_agent.models import Anomaly
+from sre_agent.telemetry.sources import LogSource
 
 
 class SilenceDetector(Detector):
@@ -25,11 +25,11 @@ class SilenceDetector(Detector):
         self.services = cfg.silence_services
         self.threshold_s = cfg.silence_threshold_s
 
-    def check(self, window: SlidingWindow, now: datetime) -> list[Anomaly]:
+    def check(self, logs: LogSource, now: datetime) -> list[Anomaly]:
         seen = 0
         silent: list[tuple[str, datetime, float]] = []
         for service in self.services:
-            last = window.last_seen(service)
+            last = logs.last_seen(service)
             if last is None:
                 continue  # never seen yet — can't distinguish silence from not-started
             seen += 1

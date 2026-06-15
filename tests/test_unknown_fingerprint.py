@@ -3,6 +3,7 @@ post-mortem is held for a human; once a post-mortem exists (it's been seen), the
 auto-acts. Off by default, so first-occurrence auto-remediation is preserved."""
 from datetime import datetime, timedelta, timezone
 
+from sre_agent.action.backend import DockerActionBackend
 from sre_agent.action.executor import ActionExecutor, Guardrails
 from sre_agent.action.recovery import RecoveryEvaluator
 from sre_agent.changelog import ChangeLog
@@ -50,8 +51,8 @@ def build(tmp_path, escalate_unknown):
     mgr = IncidentManager(incidents, tickets, InMemoryNotifier(), LAB_TOPOLOGY, cfg,
                           diagnoser=Diagnoser(Provider(), runs=1),
                           assembler=ContextAssembler(LAB_TOPOLOGY, cfg, postmortems=pms),
-                          executor=ActionExecutor(runner=runner, dry_run=False),
-                          guardrails=Guardrails(cfg.max_restarts_per_hour, changelog),
+                          executor=ActionExecutor(backend=DockerActionBackend(runner=runner), dry_run=False),
+                          guardrails=Guardrails(),
                           recovery=RecoveryEvaluator(cfg), changelog=changelog, postmortems=pms)
     return mgr, incidents, pms, runner
 

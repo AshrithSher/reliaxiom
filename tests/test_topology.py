@@ -48,3 +48,17 @@ def test_custom_topology():
     assert t.dependencies_of("a") == {"b", "c"}
     assert t.is_upstream_of("c", "a")
     assert t.most_upstream({"a", "b", "c"}) == "c"
+
+
+def test_services_lists_every_node_sorted():
+    # a dependency that is never itself a key (a leaf) is still a node
+    t = TopologyMap({"a": ["b", "c"], "b": []})
+    assert t.services() == ["a", "b", "c"]
+
+
+def test_edges_are_public_service_dependency_pairs():
+    # the public projection the dashboard needs, replacing reach-ins to _direct
+    t = TopologyMap({"a": ["b", "c"], "b": ["c"], "c": []})
+    assert set(t.edges()) == {("a", "b"), ("a", "c"), ("b", "c")}
+    # a leaf with no deps contributes no edges but is still a service
+    assert ("c", "a") not in t.edges()

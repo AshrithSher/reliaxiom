@@ -337,6 +337,34 @@ lab service and the sole `latency_services` member — was missing from the cata
 target, so a future topology addition can't silently fall out of the catalog again.
 
 
+## D-031 · 2026-06-13 · Strategic direction: substrate-agnostic engine + MCP as the universal connector
+The product evolves from a lab-specific agent into a platform that connects to **any application
+in any cloud or on-prem** without forking the engine. The architecture is three rings (see
+[VISION.md](VISION.md)): **Ring 0** the substrate-agnostic engine (already built — detect /
+correlate / state machine / diagnose / tier / verify / HITL / post-mortem operate only on
+abstract objects); **Ring 1** per-environment adapters behind Provider SPIs (`TelemetrySource`,
+`ActionBackend`, `TopologyProvider`, `ChangeFeed`, plus the existing TicketStore / Notifier /
+PostMortemStore); **Ring 2** connectors, with **MCP servers as the primary wire** and native
+SDK/REST adapters where no MCP server exists. The agent becomes both an MCP **client** (consume
+telemetry/action/ITSM servers) and, later, an MCP **server** (expose incident state + gated
+approve tools to an agent mesh). Priority order is in [ROADMAP.md](ROADMAP.md) Part II (P0–P3).
+**Why:** the engine's value is that it is environment-independent; the only thing stopping
+"works on the lab" from becoming "works on your stack" is the connector layer, and MCP is an
+open, discoverable, credential-scoped substrate already proliferating across exactly the
+observability/cloud/ITSM systems an SRE agent must touch. Reuses the proven stubs-before-real,
+interface-backed discipline (D-006/D-024) rather than inventing a new pattern.
+**Consequence — invariants are reinforced, not relaxed, when actions arrive over MCP:** an MCP
+tool is *transport, never policy* — it is mapped into the enumerated catalog with an
+operator-assigned tier (never auto-tiered; unmapped tools are inert), so a confident-but-wrong
+model still cannot invoke a risky tool (#2; D-003). Telemetry MCP servers feed deterministic
+detectors only (#1). Every MCP action is change-log-tagged before execution (#5/#7). No MCP tool
+in any tier performs a destructive data-of-record operation, enforced at the catalog mapping
+(#4). Telemetry pulled via MCP is untrusted input to diagnosis, so the evidence-grounding /
+double-run guards (D-004/D-018) and tiers-in-code remain the backstop. Every environment onboards
+through the shadow → suggest → auto trust tiers (D-019/D-022), gated by the P1 meta-monitoring
+false-positive/MTTR signals. **Nothing here is implemented yet — it is the recorded plan.**
+
+
 ## D-030 · 2026-06-13 · Tolerate the model echoing an action's display form as its id
 The diagnoser strips a trailing parameter hint from `selected_action` (e.g.
 `restart_container(service)` → `restart_container`) before resolving, and `catalog_summary`
@@ -349,3 +377,319 @@ should have fixed itself. Letting a cosmetic prompt-formatting artifact trigger 
 escalation needlessly pages a human and erodes invariant #6's spirit. The id is still validated
 against the catalog (invariant #2 intact) — only an obvious display-form artifact is normalized.
 **Consequence:** 263 offline tests green (3 new).
+
+
+## D-032 · 2026-06-13 · TelemetrySource SPI (P0.1): detectors read logs/metrics/traces through interfaces
+The detection layer no longer depends on the concrete `SlidingWindow`. A `sre_agent/telemetry/`
+package defines three read SPIs — `LogSource` (the four methods detectors already used:
+`services`/`last_seen`/`records`/`error_records`), `MetricSource` (instant + range PromQL), and
+`TraceSource` (per-service error rate + trace-by-id). Every detector and `DetectionEngine.tick`
+now type against `LogSource`; `SlidingWindow` is the default in-memory impl (a `runtime_checkable`
+Protocol conformance test pins this). Live adapters (`telemetry/adapters.py`) — `PrometheusMetricSource`,
+`LokiLogSource` (reuses the tolerant `LineParser`), `TempoTraceSource` — inject their HTTP transport
+and **degrade to None/empty on any failure, never raise** (extends D-015). `build_live_telemetry_sources(cfg)`
+selects backends; `main.build_engine` appends metric/trace detectors only when their backend is on,
+and the detector log source is Loki when `telemetry_logs == "loki"` else the window.
+**Why:** the single tailed log stream is the lab simplification flagged in VISION.md/ROADMAP P0.1 —
+real detection leans on metrics (a Prometheus histogram p95, not a log-derived guess) and traces.
+The seam half-existed (D-006/D-015); this completes it for the four telemetry signals without
+touching detection logic. **Invariants held:** detection stays deterministic (#1) — sources feed
+code thresholds, never the LLM; a down backend degrades silently (#6, no fabricated anomaly).
+**Consequence:** defaults keep the lab on the tailed path (`telemetry_*` off), so all offline tests
+ran untouched; 290 green (26 new: adapters, metric/trace detectors, Protocol conformance).
+
+## D-033 · 2026-06-13 · Lab instrumented with the free Grafana LGTM stack (no API keys)
+`logs-streaming-demo-app` had zero observability (JSON logs to stdout only). Added, self-hosted in
+its compose: Prometheus (scrapes `/metrics`), Loki + Alloy (ships Docker logs), Tempo + OTel
+Collector (OTLP traces), Grafana, cAdvisor. The Flask services gained a ~15-line `prometheus_client`
+RED block (`http_requests_total`, `http_request_duration_seconds` on `/metrics`); the worker exports
+`queue_depth` + `jobs_processed_total`. OTel is **auto-instrumentation, opt-in per container**
+(`OTEL_ENABLED=1`; the Dockerfile CMD falls back to plain `python app.py` so a missing collector can
+never stop a service booting).
+**Why:** the user chose the full RED/USE + traces path; instrumenting the services gives real
+histograms/spans rather than log-derived metrics. Everything is free OSS on localhost — no account,
+token, or cost — which is the whole point of the "what do you need to provide" answer: nothing paid.
+**Consequence:** the agent runs against real backends with `telemetry_metrics=prometheus`,
+`telemetry_traces=tempo` (and optionally `telemetry_logs=loki`); validated live on the full stack —
+`errors-red` detected via `metric_error_ratio` (api 41% / webapp 84% 5xx) in 143s, real api histogram
+p95 ≈ 59ms in Prometheus, all five services emitting traces to Tempo.
+**Live-bring-up gotchas (fixed):** (1) `opentelemetry-instrument` imports `pkg_resources`, which
+`python:3.12-slim` no longer ships and which **setuptools ≥81 removed** — so the OTel services
+crash-looped until the Dockerfiles pinned `"setuptools<81"`. (2) Recreating a service behind the
+nginx `gateway` leaves nginx resolving the old container IP → 502s until `docker compose restart
+gateway`; not an instrumentation fault, a compose-recreate artifact.
+
+## D-034 · 2026-06-13 · Metric/trace detectors are deterministic; metric-path eval scenarios added
+New detectors `MetricErrorRatioDetector` (RED-errors), `MetricLatencyDetector` (RED-duration, real
+histogram p95), `SaturationDetector` (USE, queue gauge) and `TraceErrorDetector` query their source
+with a **fixed PromQL/TraceQL string + a code threshold** — no LLM, no model-set tiers. They emit the
+same `Anomaly` objects, so debounce/cooldown/correlation are unchanged, and the log + metric twins of
+one fault collapse into a single incident (#3). The eval harness gained telemetry-aware `_LiveAgent`,
+applies a scenario's `extra_config` (to flip telemetry on), and honors a new `allow_signals` field so
+a co-firing twin isn't scored as a false positive. Scenarios `errors-red` and `latency-red` exercise
+the metric path; `latency-red` is the metric-path resolution of D-014's deferral (the histogram p95
+is a clean single signal where the log path was too multi-signal to score).
+**Why:** telemetry is *untrusted input* to detection — keeping the queries/thresholds in code is the
+backstop (VISION §4). **Consequence:** these scenarios require the LGTM stack up; existing log-only
+scenarios are unchanged. Follow-ups remain P0.2 (back these adapters with MCP servers) and P1.1 (fuse
+the three signals in the correlation engine).
+
+
+## D-035 · 2026-06-13 · Metric-detected faults are verified on the same metric (close the detect→fix→verify loop)
+`RecoveryEvaluator` takes an optional `MetricSource`. A `metric_latency_p95` incident is recovered
+only when the Prometheus p95 is back under threshold; `metric_error_ratio` only when the 5xx ratio is;
+`metric_saturation` only when the queue gauge is — each with a log sanity check. The PromQL is built
+from one shared module (`telemetry/promql.py`) used by both the detectors and the verifier, so detect
+and verify can never drift. The metric source **degrades to the log-based checks** when absent or
+unreachable: a momentarily-down backend can't wedge an incident open, and it can't declare a premature
+victory either.
+**Why:** the gap caught while reviewing fix-vs-escalate — detection had moved to metrics but
+verification still judged a latency fault on whether *error logs* cleared, so a still-slow service
+could be marked recovered. Verifying on the signal you detected on is the robust closure of D-005.
+**Tier policy unchanged (answers "fix or escalate"):** the action catalog still sets the tier in code
+(invariant #2) — stateless restarts auto-fix (Tier 1), stateful redis/postgres need approval (Tier 2),
+guardrail breach / unknown action / repeated verify-failure escalate to a human. Telemetry only adds
+detection/verification signals; it never routes. **Consequence:** 299 offline tests green (+9: metric
+recovery, the offline null-test encoding for the full log+metric+trace engine, shared PromQL). The
+running agent gets metric-aware recovery automatically (the dashboard launches it with the telemetry
+config; `RecoveryEvaluator` is wired with `telemetry.get("metrics")`). Trace-based recovery (verify on
+Tempo error-rate) is a later refinement; `trace_error_rate` currently verifies via the log path.
+
+
+## D-036 · 2026-06-13 · Container-down is a first-class detection signal (stateful outages don't need a log flood)
+Detection was 100% log/metric/trace-rate based, so "a dependency is down" only became a ticket if its
+consumers logged *enough* errors to trip a threshold. Two real outages don't: **redis** has one
+consumer (the worker) that retries on a slow fixed cadence (~one error every few seconds — below
+`error_rate_threshold`), and **postgres down while the auth tier is also failing** never produces a db
+error at all because requests 503 at auth before reaching the db. The poller already *knew* the
+container was down (the heartbeat prints `DOWN=postgres`), but nothing turned that fact into a
+candidate. New `ContainerDownDetector` reads the polled `SignalStore` and emits an `Anomaly` for any
+container in `cfg.container_down_services` (default `postgres`, `redis` — exactly the stateful deps the
+silence detector excludes) tagged with that dependency's **error code** (`db_unreachable` /
+`redis_unreachable`), so the correlator roots it on the same `service:unreachable` fingerprint the log
+path uses — a container-down candidate and any downstream error-rate candidate collapse into ONE
+incident (#3). It runs through the normal engine, so it inherits debounce, cooldown, and
+action-suppression (it will not alarm on the brief down-state the agent's own restart causes — #5).
+`RecoveryEvaluator` gained a root-container-up gate for `unreachable` faults: when the container-down
+candidate is the only evidence the log checks are vacuously clean, so the live signal must veto a
+premature recovery (and confirm it once the operator/agent restarts the container). The dashboard
+topology/health now reflect the live poll too — a stopped lab service renders red before an incident
+exists and clears the instant it's restarted (previously the map was incident-only, so a `docker stop`
+looked like "nothing happening"). Eval `_LiveAgent` is now poll-aware; scenario `db-down` (stop
+postgres) exercises the detector.
+**Why:** detection is pure code (invariant #1) and the down-container fact is the most deterministic
+signal there is — keying stateful-outage detection off downstream log volume was the fragile path.
+This is the robust closure of the gap behind "I stopped postgres and no ticket appeared."
+**Also hardened in the same pass (operational robustness, not new behavior):** (1) the agent's main
+tick loop now catches/logs/continues on a per-tick exception — a transient `database is locked`, a
+telemetry blip, or an LLM hiccup can no longer silently freeze detection (a wedged agent that stops
+detecting is the failure this project exists to avoid). (2) Every SQLite store opens through one
+`sre_agent/db.py` helper with **WAL + a 30s busy timeout**, so the out-of-process dashboard's reads and
+the approval path's writer connection no longer contend with the agent's writes into a lock error.
+**Consequence:** 312 offline tests green (container-down detector + correlation, root-container-up
+recovery, live-signal topology). `db-down` needs the lab up (it stops a real container).
+
+
+## D-037 · 2026-06-14 · ActionBackend SPI — remediation is substrate-pluggable, not docker-on-the-host
+The action layer shelled `docker restart` over the local socket (≈ root on the host, single-host, name-
+addressed) and treated the CLI exit code as success — fine for the lab, disqualifying for anyone else's
+system. New `ActionBackend` Protocol (`supports`/`observe`/`apply`, P0.1) makes execution a swap behind
+the same discipline the telemetry sources use (D-031): the engine selects a catalog action *id*; a
+backend translates it to a substrate primitive and is the *only* thing that knows the substrate.
+`ActionExecutor` is now a thin orchestrator (dry-run/shadow gate → capability gate → delegate); the
+docker argv lifted verbatim into `DockerActionBackend` (lab default, behavior-identical). The
+production-shaped backend is `KubernetesActionBackend`, run against a **free local `kind` cluster** (no
+cloud): a restart is a declarative, **idempotent** strategic-merge PATCH (the `rollout restart`
+mechanism), and recovery is **verified against the Deployment's readyReplicas/observedGeneration**, not
+an exit code. It authenticates as a ServiceAccount with a **least-privilege Role** — exactly
+`get/list/patch` on Deployments in one namespace (deploy/k8s/rbac.yaml), so the blast radius is an
+explicit RBAC grant, not host-root. Transport is injected (canned-JSON unit tests; wire shapes
+integration-validated like the Tempo adapter); `observe()` degrades to None on failure.
+**Invariants preserved:** tiers stay in code (#2) — a backend only *declares which ids it supports*,
+unsupported ids are inert (the seam MCP action servers will plug into, P0.2); the change-log tag is
+still written before execution (#5); no backend performs a destructive data op (#4 — the k8s Role omits
+delete/exec/secrets deliberately). **Consequence:** the same kill-worker scenario M4 proved on docker
+now runs end-to-end through the k8s backend (`test_pipeline_actions_p0`), proving the SPI doesn't perturb
+the engine. `action_backend` config selects the substrate; `scripts/setup-kind.ps1` brings the cluster up.
+
+
+## D-038 · 2026-06-14 · The restart cap is atomic and fleet-safe, enforced in an ActionRateLimiter (not Guardrails)
+The per-service restart cap counted a local SQLite change log in `Guardrails` and *then*, in a separate
+write, the manager recorded the action tag — a check-then-act gap two replicas (or two ticks) could both
+pass, so the fleet exceeded the cap exactly during a fault, when a runaway agent is most dangerous. Worse,
+the same per-process change log also enforces invariant #5 (suppress detection on the agent's own
+action), so a per-process store let replica B alarm on / re-remediate replica A's restart. The cap is a
+*safety* invariant, so a cap that doesn't hold fleet-wide is a correctness bug, not a nicety. New
+`ActionRateLimiter` SPI: `try_consume` performs the window count **and** writes the #5 tag in **one
+atomic transaction**, so concurrent callers serialize and the cap is exact. `Guardrails` keeps only the
+non-rate gates (valid + AUTO tier). Default `SqliteRateLimiter` uses `BEGIN IMMEDIATE` on the shared
+change-log DB (correct for multiple processes on one host); a concurrency test (20 threads, one store)
+proves exactly `cap` succeed. **No cloud:** the multi-host swap is `guardrail_store='postgres'` behind
+the same SPI — the impl lands with HA (P1.2) and raises `NotImplementedError` until then rather than
+silently degrading to a per-host cap. **Note (invariant #4):** that future store is the agent's own
+*control-plane* DB, never the monitored system's data store — a separate instance, deliberately. The
+limiter reads/writes the same `changes` table `ChangeLog` does, so it counts restarts from any path
+(auto or approved) and its tags stay visible to diagnosis and detection-suppression.
+**Consequence:** 346 offline tests green; the cap and the #5 tag are now one atomic, store-scoped fact.
+
+
+## D-039 · 2026-06-14 · TopologyProvider SPI — the dependency graph is a swappable source, not a literal
+The last two P0.1 read seams were still hardcoded literals the engine imported directly: the dependency
+graph (`LAB_TOPOLOGY` in `incident/topology.py`, imported into `main`, `approve`, both dashboard modules)
+and the change feed. This closes the topology half. New `TopologyProvider` Protocol (`topology() ->
+TopologyMap`, `runtime_checkable`) makes *where the graph comes from* a swap behind the same discipline as
+the telemetry sources (D-032) and pollers (D-015) — correlation, the diagnosis context, and the dashboard
+keep consuming an unchanged `TopologyMap`. Default `StaticTopologyProvider` wraps the built-in
+`LAB_TOPOLOGY`. The production-shaped `HttpTopologyProvider` fetches a `{service: [deps]}` adjacency
+document (service-mesh / trace-graph / CMDB / Backstage), **injects its HTTP transport** (parsing
+unit-tested offline against canned JSON), and **degrades to the static fallback on any failure** — a 4xx/5xx,
+malformed JSON, a wrong-shape body, or a raising transport all return the fallback, never crash correlation
+or fabricate a graph. A successful fetch is cached (topology is queried per candidate); a failure is *not*
+cached, so the real graph is picked up once the source recovers. `build_topology_provider(cfg)` selects on
+`topology_source` (`static` default | `http`); `topology_url` is the endpoint. `TopologyMap` gained public
+`services()` / `edges()` projections so the dashboard renders the graph through the SPI instead of reaching
+into `_direct` (removed the `noqa: SLF001`).
+**Why:** the hardcoded graph was the same lab-specific simplification VISION/ROADMAP P0.1 flag for telemetry
+and actions — real correlation needs the live dependency graph from the operator's mesh/CMDB, and rooting an
+incident on a stale or fabricated graph attributes the fault to the wrong service. **Invariants held:**
+detection/correlation stay deterministic (#1) — the provider feeds the same code paths, never the LLM; a
+down source degrades silently to the known-good fallback (#6, no fabricated graph, no spurious incident).
+**Consequence:** 358 offline tests green (+12: provider parse/cache/degrade/recover, builder selection,
+`edges`/`services`). Defaults keep the lab on the static literal, so the full suite ran untouched. The
+remaining P0.1 seam is `ChangeFeed` (deploy/config/flag events from real systems).
+
+
+## D-040 · 2026-06-14 · Multi-signal correlation engine — affinity graph over modalities, not a priority cascade (P1.1)
+Closes the D-014 gap (the project's biggest design gap per ROADMAP P1.1). `Correlator.correlate` was a
+3-step priority cascade — (1) dependency error codes → root, (2) topology `most_upstream`, (3) leftovers
+stand alone — which is correct for clean error-code cascades but leaves ONE fault's *heterogeneous* signals
+as separate tickets: a memory leak trips `crash_loop` AND `error_rate` on the same service (different
+signal types, no shared error code); added latency trips `latency_p95` AND `error_rate`; the log / metric /
+trace twins of one fault land separately. It was also single-modality (candidate↔candidate only) and
+assumed near-simultaneity (a tight flush window). Rewrote it as an **affinity graph + connected components**
+(union-find): one component = one incident, with edges across modalities — **E1** same service, **E2**
+shared trace/request id, **E3** directional topology chain, **E4** dependency-error co-attribution.
+Within a component, root precedence is: dep-error root (most precise) > a recently-changed service
+(deploy/config coincidence, from the change log) > topology `most_upstream` > the member with the most
+dependents (then earliest `first_seen`). Trace correlation — the strongest *causal* signal, already
+gathered for diagnosis in `diagnosis/context.py` (keyed on `request_id`) — is promoted into correlation:
+`trace_ids` was added to `Anomaly`/`IncidentCandidate`, populated by the error-rate detector from each
+failing request's id and carried through the engine like `error_codes`. A shared trace id (E2) fuses
+across services even when topology and error codes can't (sibling services over a shared dep) and **bypasses
+the time window** (causal regardless of timing); the non-causal edges (E1/E3/E4) are gated by an adaptive
+window (`correlation_max_span_s`, default 300s — real cascades propagate over minutes, not the 90s flush
+window). The manager feeds recent non-agent change-log entries (`change_coincidence_window_s`, default 600s)
+into `correlate`.
+**Why:** the D-014 break was observed live (`loadgen:latency_p95` hard-escalating; multi-signal faults
+producing multiple tickets). Error-code-keyed merging only works when a fault announces itself with a
+dependency code; a leak/latency fault does not. Trace ids are the strongest causal link an SRE has, and we
+were already collecting them downstream — not using them in correlation was the single biggest intellectual
+gap. **Invariants held:** correlation stays pure deterministic code (#1 — no LLM); one fault = one ticket
+is *strengthened* (#3); D-016 is preserved exactly — candidates that *merely share a dependency* still do
+NOT merge (E3 requires a *directional* upstream/downstream chain between the two candidates' own services,
+not a shared leaf; worker+gateway both depend on redis/postgres but neither is upstream of the other, so
+they fuse only via an actual `redis_unreachable`/`db_unreachable` error code, which is E4). `stream_blind`
+(service `_stream`, depends on nothing, no codes/traces) still stands alone — an agent-health signal, never
+a lab incident (D-013). The earlier 3-step behavior is a strict subset of the new edges, so all prior
+correlation tests pass unchanged.
+**Consequence:** 368 offline tests green (+10: same-service heterogeneous fusion, latency/metric/trace
+modality collapse, shared-trace cross-service fusion, window adaptivity, deploy-coincidence root, dep-error
+precedence, no-merge-on-change, manager-level multi-signal one-ticket). New config: `correlation_max_span_s`,
+`change_coincidence_window_s`. **Follow-ups:** (1) the metric/trace detectors don't yet populate `trace_ids`
+(they fuse via same-service/topology); promoting Tempo `trace_id`s into those Anomalies would extend E2 to
+the pure-metric path. (2) Add live `latency`/`memleak` eval scenarios scored by primary signal now that the
+engine collapses them (D-014's deferred follow-up) — needs the lab up to validate end-to-end.
+
+
+## D-041 · 2026-06-14 · State & HA — Postgres-backed shared stores + leader election (Maturity 9 / P1.2)
+The agent's control plane (incident state, tickets, change log, post-mortems, the restart-cap
+ledger, leader lock) was per-host SQLite in `.state/`: restart-safe on one host (D-009) but a
+single point of failure — one process, one host, single-writer files you can't point two replicas
+at, and no coordination primitive to stop two agents double-acting one incident. Closed it the way
+the persistence-interface discipline (D-006/D-009) intended — *swap the backing store + add
+coordination, not a redesign*: `state_backend` (config) selects `sqlite` (default, unchanged) or
+`postgres` (a shared managed store) for ALL stores at once. New Postgres twins implement the exact
+same interfaces — `PostgresIncidentStore`, `PostgresTicketStore`, `PostgresPostMortemStore`,
+`PostgresChangeLog` — reusing each SQLite store's pure row↔model mapper verbatim, so the two
+backends can't drift; the manager, the Composite Jira/Confluence stores, and the diagnosis read
+paths are untouched. `PostgresRateLimiter` is the fleet-wide swap promised in D-038: the per-service
+restart cap and the #5 change-log tag are one transaction serialised by a transaction-scoped
+advisory lock keyed on the target, so the cap holds across replicas (a 20-thread test confirms
+exactly `cap` succeed). Coordination is **leader election** (one acts, others hot-standby):
+`PostgresLeadership` uses a *session-scoped* `pg_try_advisory_lock`, whose auto-release on
+connection drop gives crash failover with no lease timer — only the leader runs detect→correlate→
+ticket→diagnose→act→verify; standbys keep tailing/polling so their window stays warm and, because
+state is shared, take over mid-incident without re-acting (D-009 at fleet scale). `SingleNodeLeadership`
+is the no-op default so the single-process path is byte-identical. A stdlib `HealthServer` serves
+`/healthz` (a dead-man's switch — liveness fails if the tick loop hasn't run in ~6 ticks, so k8s
+restarts a wedged agent) and `/readyz` (leader-aware), extensible for the Maturity-11 `/metrics`.
+`psycopg` is an optional extra (`pip install 'sre-agent[postgres]'`); the agent's state DB is
+deliberately a SEPARATE database from any monitored system's data of record (invariant #4 — this is
+the agent's own control plane).
+**Why:** an SRE agent being down during an incident is the worst possible time; restart-safe isn't
+failure-safe. Leader election is the minimum coordination that prevents a double-restart, and a
+shared store is its precondition.
+**Verified live (Docker up):** 376 offline tests green (+8 new) with `state_backend=sqlite`
+unchanged; with `$SRE_STATE_DSN` set against a dedicated `sre-statedb` Postgres, 14 store/HA
+contract tests pass (all four stores behave identically to SQLite; 20-thread cap holds at exactly
+3). Two replicas against the shared store + live lab: exactly one LEADER, one standby (`/readyz`
+503); killed the leader → standby took over (`/readyz` 200) — the P1.2 failover exit criterion. A
+single `--postgres` agent against the live lab took the `errors` cascade end-to-end — the 4-service
+fan-out collapsed to ONE `api:internal_error` incident persisted in Postgres, ticketed, diagnosed,
+acted (dry-run), and verifying. **Consequence:** new config `state_backend`/`state_dsn(_env)`,
+`ha_enabled`, `replica_id`, `leader_lock_key`, `health_enabled`/`health_port`; CLI `--postgres`,
+`--ha`, `--health`. The dashboard (D-025) still reads the SQLite files; pointing it at a Postgres
+projection is a follow-up (it's a demo read-only view, not on the agent's HA path). The multi-host
+guardrail_store note in D-038 is now realized.
+
+
+## D-042 · 2026-06-15 · Meta-monitoring — the agent watches itself (Maturity 11 / P1.3)
+The agent's only self-signal was a stderr heartbeat: not alertable, no quantified false-positive
+rate (invariant #6 was asserted by the null test, never measured continuously), no self-SLOs. If
+the agent silently wedged — stuck loop, provider down past the cap, ingestion stalled — nobody
+found out. Added a dependency-free Prometheus exposition (`sre_agent/metrics.py`: Counter / Gauge /
+Histogram + `render()`, no prometheus_client needed) surfaced on the Maturity-9 health server's
+`/metrics`. `AgentMetrics` is the semantic facade; the manager records lifecycle events
+(`sre_detection_latency_seconds` from symptom first-seen to incident, `sre_mttr_seconds`,
+`sre_escalations_total`, `sre_incident_outcomes_total`, `sre_actions_total{result}`,
+`sre_diagnosis_latency_seconds`, `sre_diagnoses_total`), and the main loop stamps
+`sre_last_tick_timestamp_seconds` (the dead-man's switch) + `sre_leader`/`sre_up` every tick. A
+`NullMetrics` no-op keeps the manager API identical when metrics are off, so the offline suite is
+untouched. **stream_blind is now correctly routed (closing a D-013 gap):** the manager intercepts a
+`stream_blind` candidate in `ingest()` and fires an agent-health page + `sre_stream_blind_total`
+instead of buffering/correlating/ticketing it — the agent going blind is an agent-health event, not
+a lab incident. Shipped the SLO alerting as code (`deploy/alerts.yml`): the loud dead-man's-switch
+(`time() - sre_last_tick_timestamp > 60`), scrape-failure, agent-blind, no-leader pages, plus
+escalation-rate / MTTR-regression / false-positive-proxy tickets — routed through the same on-call
+the agent uses for lab incidents. `deploy/prometheus-scrape.yml` and the HA `deploy/k8s/agent-
+deployment.yaml` (2 replicas, liveness=/healthz, readiness=/readyz, Prometheus scrape annotations)
+tie probes + metrics into k8s self-healing. This is also what gates the shadow-mode rollout (VISION
+§5): shadow mode is only useful if FP rate and accuracy are measured, which now they can be.
+**Why:** "you can't improve what you don't track" — invariant #6 demands a measured FP rate, and a
+watcher that can go silently dark is the failure this project exists to prevent. The agent emitting
+its own metrics also makes it a monitored production service like any other (VISION §6).
+**Verified live (Docker up):** 383 offline tests green (+7: exposition primitives, AgentMetrics
+recorders, the /metrics endpoint, manager lifecycle wiring, stream_blind-is-a-page-not-a-ticket). A
+live `--postgres --health` agent against the lab served `/healthz` (alive), `/readyz` (ready), and
+`/metrics` with `sre_up=1`, `sre_leader=1`, and an advancing `sre_last_tick_timestamp_seconds`.
+**Consequence:** new config `health_enabled`/`health_port` (shared with Maturity 9); `--health` CLI;
+new `deploy/` artifacts. The FP-rate alert is a proxy (incidents without a successful action) until
+labelled operator feedback ("not a real incident" closures) exists — a P3 follow-up. Diagnosis
+*cost* (tokens/$) isn't tracked yet — latency is; cost needs the provider to return usage.
+
+
+## D-043 · 2026-06-15 · approve/reject CLI forces UTF-8 stdout (found in live end-to-end testing)
+The operator approval CLI (`sre_agent/approve.py`) did not reconfigure its streams to UTF-8 the
+way `main.py` does. On a default Windows console (cp1252), `reject` (and any path) drove
+`_escalate` → `ConsoleNotifier`, which prints a line containing `→`; encoding that raised
+`UnicodeEncodeError` **before** `IncidentStore.save`, so the escalation was silently lost — the
+incident stayed `AWAITING_APPROVAL` while the CLI reported a crash. Fixed by mirroring main.py's
+UTF-8 reconfigure block at CLI start and using ASCII arrows in the CLI's own prints.
+**Why it mattered / how it was found:** surfaced only by driving the *real* CLI through a live
+incident on a Windows console during end-to-end verification — no unit test caught it because
+pytest's stdout isn't a cp1252 console. It's a correctness bug (a human rejecting a Tier-2 action
+would think it failed, and the action would remain pending), exactly the class of issue the
+"actually run it" pass exists to catch. **Guard:** `tests/test_approve_cli.py` reproduces it in a
+subprocess with `PYTHONIOENCODING=cp1252` and asserts the CLI exits 0 and persists ESCALATED.
+**Consequence:** 384 offline tests green (+1). The notifier still prints `→` for humans; the fix is
+that the CLI's console can always encode it.

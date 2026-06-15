@@ -114,3 +114,37 @@ fault → one ticket, many comments), **HITL timeout test** (Tier 2 with no huma
 no action), **correlation test** (multi-symptom single fault → one incident),
 **flap test** (oscillating fault → one held-open ticket). MTTR dashboard derived from
 ticket timestamps.
+
+## 10. State & HA (the agent's own control plane)
+
+The four stores (incidents, tickets, change log, post-mortems) plus the restart-cap ledger sit
+behind interfaces. `state_backend` selects the substrate for all of them at once:
+
+- **`sqlite`** (default) — per-host files in `.state/`; restart-safe on one host (D-009).
+- **`postgres`** — a shared managed store so multiple replicas run against one source of truth
+  (failure-safe, not just restart-safe). Same interfaces, same row↔model mappers (D-041).
+
+**Coordination** is leader election (`--ha`): replicas contend for one Postgres advisory lock;
+only the leader runs the incident lifecycle (correlate→ticket→diagnose→act→verify); standbys keep
+tailing/polling so their window stays warm and take over on leader loss without re-acting (shared
+state + idempotent actions). **Fleet guardrails** — the restart cap — are atomic across replicas
+(`PostgresRateLimiter`, advisory-lock serialised). This DB is the agent's control plane, deliberately
+separate from any monitored system's data of record (invariant #4). `deploy/k8s/agent-deployment.yaml`
+runs 2 replicas with liveness/readiness probes for k8s self-healing.
+
+## 11. Meta-monitoring (watching the watcher)
+
+The agent is itself a monitored production service. It exposes a self-health HTTP server:
+
+- **`/healthz`** — liveness, a dead-man's switch (fails if the tick loop hasn't run in ~6 ticks →
+  k8s restarts a wedged agent).
+- **`/readyz`** — readiness, leader-aware (a standby reports not-ready but stays warm).
+- **`/metrics`** — Prometheus exposition of the self-SLO signals: detection latency, MTTR,
+  escalation rate, action success, diagnosis latency, incident outcomes, `sre_last_tick`
+  (heartbeat), `sre_leader`, `sre_up`.
+
+`stream_blind` (D-013) is routed here as an agent-health **page**, never a lab ticket — the agent
+going blind is its own incident. SLO alert rules (`deploy/alerts.yml`) page through the same
+on-call the agent uses for lab incidents (dead-man's switch, agent-blind, no-leader) and ticket on
+regressions (escalation rate, MTTR, a false-positive proxy). This layer is what makes the
+shadow-mode rollout measurable — FP rate and accuracy are tracked, not asserted (invariant #6).

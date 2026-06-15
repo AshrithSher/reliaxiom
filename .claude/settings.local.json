@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "PowerShell(\\(Get-Content C:\\\\Mine\\\\Concave\\\\SRE\\\\eval\\\\harness.py -Raw\\) -replace 'print\\\\\\(f\"--- ', 'print\\(flush=True or \"\", end=\"\"\\); print\\(f\"--- ' | Out-Null; 'skip')",
-      "PowerShell(docker compose -f C:\\\\Mine\\\\Concave\\\\logs-streaming-demo-app\\\\docker-compose.yml ps --format \"table {{.Name}}\\\\t{{.Status}}\")"
+      "PowerShell(docker compose -f C:\\\\Mine\\\\Concave\\\\logs-streaming-demo-app\\\\docker-compose.yml ps --format \"table {{.Name}}\\\\t{{.Status}}\")",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_action_backend.py tests/test_action_executor.py -q)"
     ]
   }
 }

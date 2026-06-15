@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING
 
 from sre_agent.config import Config
 from sre_agent.detect.base import Detector
-from sre_agent.ingest.window import SlidingWindow
 from sre_agent.models import Anomaly, IncidentCandidate
+from sre_agent.telemetry.sources import LogSource
 
 if TYPE_CHECKING:
     from sre_agent.changelog import ChangeLog
@@ -51,10 +51,10 @@ class DetectionEngine:
         recent = self._changelog.recent(now - self._suppression, now)
         return any(e.actor == "sre-agent" and e.service == service for e in recent)
 
-    def tick(self, window: SlidingWindow, now: datetime) -> list[IncidentCandidate]:
+    def tick(self, logs: LogSource, now: datetime) -> list[IncidentCandidate]:
         anomalies: list[Anomaly] = []
         for detector in self.detectors:
-            anomalies.extend(detector.check(window, now))
+            anomalies.extend(detector.check(logs, now))
 
         seen: set[_Key] = set()
         for anomaly in anomalies:
@@ -89,6 +89,7 @@ class DetectionEngine:
                     confirmed_at=now,
                     evidence_sample=track.latest.evidence,
                     error_codes=track.latest.error_codes,
+                    trace_ids=track.latest.trace_ids,
                 ))
                 self._muted_until[key] = now + self.cooldown
                 del self._tracks[key]

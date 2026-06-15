@@ -1,0 +1,53 @@
+# HA deployment of the SRE agent (Maturity 9 + 11). Two replicas contend for leadership via the
+# shared Postgres advisory lock (only the leader acts); k8s liveness/readiness probes hit the
+# agent's own health server, and Prometheus scrapes its /metrics — so the watcher is scheduled,
+# self-healed, and monitored like any other production service (VISION §6).
+#
+# Prereqs: the scoped ServiceAccount/Role/RoleBinding in deploy/k8s/rbac.yaml (restart RBAC),
+# and a secret `sre-state` holding the Postgres DSN. This manifest is the production shape; the
+# lab itself runs via docker compose on the host.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sre-agent
+  namespace: lab
+  labels: {app: sre-agent}
+spec:
+  replicas: 2                      # HA: leader + warm standby (D-041)
+  selector:
+    matchLabels: {app: sre-agent}
+  template:
+    metadata:
+      labels: {app: sre-agent}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9108"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: sre-agent     # scoped restart RBAC (deploy/k8s/rbac.yaml)
+      containers:
+        - name: agent
+          image: sre-agent:latest
+          args: ["-m", "sre_agent.main", "--ha", "--health", "--execute"]
+          env:
+            - name: SRE_STATE_DSN
+              valueFrom: {secretKeyRef: {name: sre-state, key: dsn}}
+            - name: SRE_KUBE_TOKEN
+              valueFrom: {secretKeyRef: {name: sre-agent-token, key: token}}
+          ports:
+            - {name: health, containerPort: 9108}
+          # liveness = the dead-man's switch: /healthz fails if the tick loop hasn't run in ~6
+          # ticks, so k8s restarts a wedged agent (self-healing).
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            failureThreshold: 3
+          # readiness = leader-aware: a standby reports not-ready (it isn't acting) but stays
+          # running and warm, ready to take over the instant the leader's lock releases.
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 512Mi}

@@ -11,6 +11,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from sre_agent.db import connect
+
 
 class PostMortem(BaseModel):
     incident_id: str
@@ -39,8 +41,7 @@ class PostMortemStore(ABC):
 
 class SqlitePostMortemStore(PostMortemStore):
     def __init__(self, path: str | Path, markdown_dir: str | Path | None = None) -> None:
-        self._conn = sqlite3.connect(str(path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._conn = connect(path)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS postmortems (

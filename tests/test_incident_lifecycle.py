@@ -34,9 +34,17 @@ def test_resolved_reopens_only_via_flapping():
         validate_transition(IncidentState.RESOLVED, IncidentState.DIAGNOSING)
 
 
-def test_escalated_is_terminal():
-    with pytest.raises(InvalidTransition):
-        validate_transition(IncidentState.ESCALATED, IncidentState.DIAGNOSING)
+def test_escalated_is_terminal_to_the_agent():
+    # the agent never re-diagnoses or re-acts on a handed-off incident
+    for dst in (IncidentState.DIAGNOSING, IncidentState.ACTING, IncidentState.AWAITING_APPROVAL,
+                IncidentState.VERIFYING, IncidentState.FLAPPING):
+        with pytest.raises(InvalidTransition):
+            validate_transition(IncidentState.ESCALATED, dst)
+
+
+def test_escalated_can_be_closed_by_a_human():
+    # the one allowed edge out of ESCALATED: an explicit human resolve (manager.manual_resolve)
+    validate_transition(IncidentState.ESCALATED, IncidentState.RESOLVED)
 
 
 def test_illegal_jump_raises():

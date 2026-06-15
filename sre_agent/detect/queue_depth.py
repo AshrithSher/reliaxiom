@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 
 from sre_agent.config import Config
 from sre_agent.detect.base import Detector
-from sre_agent.ingest.window import SlidingWindow
 from sre_agent.models import Anomaly
+from sre_agent.telemetry.sources import LogSource
 
 
 class QueueDepthDetector(Detector):
@@ -21,11 +21,11 @@ class QueueDepthDetector(Detector):
         self.threshold = cfg.queue_depth_threshold
         self.min_samples = cfg.queue_depth_min_samples
 
-    def check(self, window: SlidingWindow, now: datetime) -> list[Anomaly]:
+    def check(self, logs: LogSource, now: datetime) -> list[Anomaly]:
         since = now - timedelta(seconds=self.window_s)
         anomalies = []
-        for service in window.services():
-            samples = [r for r in window.records(service, since) if r.queue_depth is not None]
+        for service in logs.services():
+            samples = [r for r in logs.records(service, since) if r.queue_depth is not None]
             if len(samples) < self.min_samples:
                 continue
             first, last = samples[0].queue_depth, samples[-1].queue_depth

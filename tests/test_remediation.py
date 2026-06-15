@@ -7,6 +7,7 @@ from datetime import timedelta
 import pytest
 
 from sre_agent.action.catalog import Tier
+from sre_agent.action.backend import DockerActionBackend
 from sre_agent.action.executor import ActionExecutor, Guardrails
 from sre_agent.action.recovery import RecoveryEvaluator
 from sre_agent.changelog import ChangeLog
@@ -48,8 +49,8 @@ def build(tmp_path, runner=None):
     notifier = InMemoryNotifier()
     changelog = ChangeLog(tmp_path / "c.db")
     mgr = IncidentManager(incidents, tickets, notifier, LAB_TOPOLOGY, c,
-                          executor=ActionExecutor(runner=runner or FakeRunner(), dry_run=False),
-                          guardrails=Guardrails(c.max_restarts_per_hour, changelog),
+                          executor=ActionExecutor(backend=DockerActionBackend(runner=runner or FakeRunner()), dry_run=False),
+                          guardrails=Guardrails(),
                           recovery=RecoveryEvaluator(c), changelog=changelog)
     return mgr, tickets, incidents, notifier, changelog
 

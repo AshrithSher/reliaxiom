@@ -1,0 +1,78 @@
+# Prometheus alerting rules for the SRE agent's OWN SLOs (Maturity 11 / D-042).
+# "Watch the watcher": these page through the SAME on-call the agent uses for lab incidents.
+# Scrape target is the agent's /metrics (see deploy/prometheus-scrape.yml). Load with:
+#   rule_files: [ /etc/prometheus/sre-agent-alerts.yml ]
+groups:
+  - name: sre-agent-self-slo
+    rules:
+      # --- dead-man's switch: the loudest alert. The agent's tick loop stamps
+      # sre_last_tick_timestamp_seconds every cycle; if it stops, the agent is wedged
+      # (stuck loop, provider down past the cap, ingestion stalled) and nobody else will notice.
+      - alert: SREAgentHeartbeatStalled
+        expr: time() - max(sre_last_tick_timestamp_seconds) > 60
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "SRE agent heartbeat stalled (>60s since last tick)"
+          description: "The agent loop has not completed a tick in over a minute — it is wedged. This is the dead-man's switch."
+
+      # --- scrape failure: the agent process/endpoint is gone entirely.
+      - alert: SREAgentDown
+        expr: up{job="sre-agent"} == 0
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "SRE agent /metrics unreachable"
+          description: "Prometheus cannot scrape the agent — process down or health server unreachable."
+
+      # --- the agent went blind (stream_blind, D-013): all telemetry silent at once.
+      - alert: SREAgentBlind
+        expr: increase(sre_stream_blind_total[5m]) > 0
+        for: 0m
+        labels: {severity: page}
+        annotations:
+          summary: "SRE agent is BLIND (stream_blind fired)"
+          description: "All monitored services went silent simultaneously — dead tailer, stopped lab, or telemetry outage. The agent cannot detect incidents while blind."
+
+      # --- HA: no replica is leading, so nobody is acting on incidents.
+      - alert: SREAgentNoLeader
+        expr: max(sre_leader) == 0
+        for: 2m
+        labels: {severity: page}
+        annotations:
+          summary: "No SRE agent replica holds leadership"
+          description: "Every replica is a standby for >2m — leader election is stuck or all replicas lost the shared store. No incidents are being acted on."
+
+      # --- self-SLO regressions (ticket, not page) ---
+      - alert: SREAgentHighEscalationRate
+        expr: |
+          sum(increase(sre_escalations_total[1h]))
+            / clamp_min(sum(increase(sre_incident_outcomes_total[1h])), 1) > 0.5
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Agent escalating >50% of incidents (last 1h)"
+          description: "The agent is handing more than half of incidents to humans — auto-remediation accuracy or coverage has regressed."
+
+      - alert: SREAgentMTTRRegression
+        expr: histogram_quantile(0.9, sum(rate(sre_mttr_seconds_bucket[1h])) by (le)) > 600
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Agent p90 MTTR > 10m (last 1h)"
+          description: "Ninety percent of incidents now take over ten minutes to resolve — remediation is slow or looping."
+
+      # --- false-positive proxy. Invariant #6: false positives are top-severity bugs, so the
+      # FP rate must be MEASURED continuously, not asserted by the null test. A clean proxy
+      # until labelled feedback exists: incidents created with NO action taken that still
+      # resolved (the agent ticketed something that needed no remediation). Tighten as labelled
+      # ground truth (operator "not a real incident" closes) becomes available.
+      - alert: SREAgentFalsePositiveProxyHigh
+        expr: |
+          sum(increase(sre_incidents_total[6h]))
+            - sum(increase(sre_actions_total{result="success"}[6h])) > 5
+        for: 30m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Possible false-positive spike (incidents without successful action, 6h)"
+          description: "More than 5 incidents in 6h created without a successful remediation action — investigate for false positives (invariant #6)."

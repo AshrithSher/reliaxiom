@@ -4,6 +4,7 @@ import json
 from datetime import timedelta
 
 from sre_agent.action.catalog import Tier
+from sre_agent.action.backend import DockerActionBackend
 from sre_agent.action.executor import ActionExecutor, Guardrails
 from sre_agent.action.recovery import RecoveryEvaluator
 from sre_agent.changelog import ChangeLog
@@ -49,8 +50,8 @@ def build(tmp_path, response=DX):
     mgr = IncidentManager(incidents, tickets, InMemoryNotifier(), LAB_TOPOLOGY, cfg,
                           diagnoser=Diagnoser(FakeProvider(response), runs=1),
                           assembler=ContextAssembler(LAB_TOPOLOGY, cfg),
-                          executor=ActionExecutor(runner=Runner(), dry_run=False),
-                          guardrails=Guardrails(cfg.max_restarts_per_hour, changelog),
+                          executor=ActionExecutor(backend=DockerActionBackend(runner=Runner()), dry_run=False),
+                          guardrails=Guardrails(),
                           recovery=RecoveryEvaluator(cfg), changelog=changelog, postmortems=pms)
     return mgr, incidents, pms
 

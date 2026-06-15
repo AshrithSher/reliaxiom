@@ -1,0 +1,48 @@
+# Least-privilege identity for the SRE agent's Kubernetes ActionBackend (ROADMAP P0.1/P0.4).
+#
+# This is the concrete replacement for "docker socket access ≈ root on the host". The agent
+# authenticates as the `sre-agent` ServiceAccount, whose Role grants EXACTLY the verbs the
+# action catalog needs and nothing more: get/list/patch on Deployments in the `lab` namespace.
+# It cannot create, delete, exec, read secrets, or touch any other resource or namespace — the
+# agent's blast radius is this explicit grant, enforced by the API server, not by trust.
+#
+# Apply with: kubectl apply -f deploy/k8s/rbac.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-agent
+  namespace: lab
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sre-agent-remediator
+  namespace: lab
+rules:
+  # restart_container == `kubectl rollout restart`: a strategic-merge PATCH on the Deployment.
+  # get/list back the observe() read used for idempotency and recovery verification.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+  # No "create"/"delete"/"deletecollection" — the agent can cycle workloads, never remove them.
+  # No "pods/exec", no "secrets", no cluster-scoped rules — deliberately omitted (invariant #4).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sre-agent-remediator
+  namespace: lab
+subjects:
+  - kind: ServiceAccount
+    name: sre-agent
+    namespace: lab
+roleRef:
+  kind: Role
+  name: sre-agent-remediator
+  apiGroup: rbac.authorization.k8s.io

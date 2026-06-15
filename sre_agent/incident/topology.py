@@ -39,6 +39,15 @@ class TopologyMap:
         deps = [self.dependencies_of(s) for s in services]
         return set.intersection(*deps) if deps else set()
 
+    def services(self) -> list[str]:
+        """Every node in the graph (keys and leaf dependencies), sorted."""
+        return sorted(self._direct)
+
+    def edges(self) -> list[tuple[str, str]]:
+        """Direct (service, dependency) pairs — a public read-only projection of the graph
+        for renderers (e.g. the dashboard), so they need not reach into internals."""
+        return [(svc, dep) for svc, deps in self._direct.items() for dep in sorted(deps)]
+
     def _reverse(self) -> dict[str, set[str]]:
         rev: dict[str, set[str]] = {svc: set() for svc in self._direct}
         for svc, deps in self._direct.items():

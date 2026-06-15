@@ -10,6 +10,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 dashboard = ["fastapi>=0.110", "uvicorn>=0.29"]
+# HA / shared state (Maturity 9): Postgres-backed stores + leader election. Opt-in —
+# the default state_backend stays sqlite, so the offline suite needs none of this.
+postgres = ["psycopg[binary]>=3.1"]
 
 [tool.setuptools.packages.find]
 include = ["sre_agent*", "eval*"]

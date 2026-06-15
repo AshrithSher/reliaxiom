@@ -4,6 +4,7 @@ taken. Real engine + manager + executor; a fake LLM proposes an APPROVAL-tier ac
 import json
 from datetime import timedelta
 
+from sre_agent.action.backend import DockerActionBackend
 from sre_agent.action.executor import ActionExecutor, Guardrails
 from sre_agent.action.recovery import RecoveryEvaluator
 from sre_agent.changelog import ChangeLog
@@ -51,8 +52,8 @@ def build(tmp_path):
         tmp_path, cfg,
         diagnoser=Diagnoser(FakeProvider(RESTART_REDIS), runs=1),
         assembler=ContextAssembler(LAB_TOPOLOGY, cfg),
-        executor=ActionExecutor(runner=runner, dry_run=False),
-        guardrails=Guardrails(cfg.max_restarts_per_hour, changelog),
+        executor=ActionExecutor(backend=DockerActionBackend(runner=runner), dry_run=False),
+        guardrails=Guardrails(),
         recovery=RecoveryEvaluator(cfg),
         changelog=changelog,
     )

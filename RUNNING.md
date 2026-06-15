@@ -1,336 +1,465 @@
-# RUNNING.md — try the SRE agent yourself
+# RUNNING.md — demo & operations guide
 
-The agent tails the lab's log stream, detects faults with deterministic code, diagnoses
-confirmed incidents with an LLM, and then **either fixes them automatically, asks a human to
-approve a riskier fix, or hands off to a human** — depending on the action's risk tier.
+How to **run the SRE agent and show it to a client**. It is organised as a story:
 
-This guide drives every one of those outcomes as a numbered scenario.
+1. **What you're showing** — the one-paragraph pitch and the loop.
+2. **The surfaces** — every screen, what's on it, what to point at.
+3. **Setup** (once) → **Start a session** (each time).
+4. **The demo flow** — a ~7-minute narrative, click by click, with *what to say*.
+5. **Every scenario** — the full fault menu as a reference table.
+6. **"This is production-grade, not a toy"** — HA, self-monitoring, Kubernetes, safety proofs.
+7. **Command reference** — what you get when you run each command.
+8. **Reset / teardown / gotchas.**
 
 ---
 
-## 1. One-time setup
+## 1. What you're showing
+
+> **Cheap code watches everything, always. The LLM wakes up only when something is actually
+> broken. The agent fixes what's safe to fix itself, asks a human before touching anything
+> stateful, and escalates when it's unsure — and it does all of this on your real stack, with
+> real tickets and real post-mortems.**
+
+The loop, every incident:
+
+```
+detect (no LLM)  →  correlate (one fault = one ticket)  →  diagnose (LLM)  →
+   tier (hard-coded)  →  act / ask a human / escalate  →  verify recovery  →  resolve  →  post-mortem
+```
+
+The three things that make it credible: **(a)** detection is deterministic code, so it's silent on
+a healthy system; **(b)** the *risk tier* of every action is fixed in code, never chosen by the
+model; **(c)** it verifies recovery on the same signal it detected on, then writes the post-mortem.
+
+---
+
+## 2. The surfaces (what each screen is, what to highlight)
+
+| Screen | URL | What it is | Point at… |
+|---|---|---|---|
+| **Agent console** | http://localhost:8000 | the demo cockpit — start/stop the agent, inject faults, approve, watch KPIs | topology graph, incident feed, incident drawer, KPI strip |
+| **Grafana** | http://localhost:3000 | the agent's "eyesight": metrics + logs + traces | Explore → Prometheus / Loki / Tempo |
+| **Prometheus** | http://localhost:9090/graph | raw PromQL | the 5xx-ratio and p95 queries the agent detects on |
+| **Jira (HELP)** | your Atlassian site | the real ticket each incident opens | lifecycle comments, severity→priority, fingerprint label |
+| **Confluence (ReliAxiom)** | your Atlassian site | the post-mortem each resolved incident publishes | timeline, root cause, MTTx |
+| **Agent /metrics** | http://localhost:9108/metrics | the agent monitoring *itself* (Part 6) | `sre_mttr_seconds`, `sre_last_tick…` (dead-man's switch) |
+
+**The Agent console in detail — the four things on screen:**
+- **Service topology** — the dependency graph. Healthy nodes are green; an affected service turns
+  red and goes back to green when the agent fixes it.
+- **Incident feed** — one row per incident, walking its lifecycle live:
+  `detected → diagnosing → acting → verifying → resolved` (or `awaiting_approval` / `escalated`).
+- **Incident drawer** (click a row) — the **LLM root-cause text**, the **evidence it cited**, the
+  **action it took**, the **tier**, and a **Jira ↗** link to the real ticket.
+- **KPI strip** — `auto-resolve %`, `pages avoided`, `MTTR`, `fastest resolve`, incident counts.
+  These are the business numbers, computed from the post-mortem archive.
+
+---
+
+## PART 0 — ONE-TIME SETUP (do once per machine)
 
 ```powershell
 cd C:\Mine\Concave\SRE
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1           # activate ONCE (see note below)
-python -m pip install -e ".[dev,dashboard]"   # dashboard extra = fastapi + uvicorn
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev,dashboard]"        # add ,postgres for the HA path (Part 6)
 ```
 
-Confirm the LLM key exists (gitignored): `.secrets\llm.env` with `GEMINI_API_KEY=...`.
+**Secrets** (gitignored — create `.secrets\`):
+- `.secrets\llm.env` — AI diagnosis. At least one key; both = automatic failover.
+  ```
+  OPENROUTER_API_KEY=...
+  GEMINI_API_KEY=...
+  ```
+- `.secrets\atlassian.env` — *optional*, only for real Jira/Confluence. Skip it and the agent uses
+  its built-in local stores (tickets/post-mortems still work, just no Atlassian).
+  ```
+  ATLASSIAN_SITE=https://your-site.atlassian.net
+  ATLASSIAN_EMAIL=you@example.com
+  ATLASSIAN_API_TOKEN=...
+  JIRA_PROJECT_KEY=HELP
+  CONFLUENCE_SPACE_KEY=ReliAxiom
+  ```
 
-> **Activate once per terminal.** After `Activate.ps1`, just type `python ...` — no venv path.
-> In **cmd.exe** use `.venv\Scripts\activate.bat` instead. You'll use **two terminals**:
-> **A** = the agent, **B** = control (faults / approvals / inspection). Activate the venv in both.
+**Sanity check:** `python -m pytest -q` → **`384 passed, 10 skipped`** (the skips are live-Kubernetes
+and Postgres-gated tests — Parts 6).
 
 ---
 
-## 1b. Run the live demo — the dashboard is the whole console
+## PART 1 — START A SESSION (each time)
 
-The **only** thing in a terminal is the lab. Everything else — starting the agent, injecting
-faults, approving Tier-2 actions — happens in the dashboard UI.
+1. **Docker Desktop running?** The whale icon 🐳 is steady; `docker ps` lists containers.
+2. **Bring it all up — one command:**
+   ```powershell
+   .\scripts\demo-up.ps1            # add -Reset to wipe prior incident history first
+   ```
+   **What you get:** all **16 containers** (the 9-service app + Prometheus/Loki/Tempo/Grafana/…)
+   start, the **dashboard** launches on :8000, and your browser opens to it.
+3. **Confirm the app is healthy:** `curl http://localhost:8080/products` → HTTP 200 with JSON.
+   *(A 502 = the gateway came up before its upstreams; `docker compose ... restart gateway`.)*
+4. **Open the tabs:** Agent console (:8000), Grafana (:3000), Prometheus (:9090).
 
-```powershell
-.\scripts\demo-up.ps1            # lab (docker compose) + dashboard, opens http://localhost:8000
-.\scripts\demo-up.ps1 -Reset     # same, but clear prior incident state first
-```
-
-Then, in the browser at `http://localhost:8000`:
-
-1. **Start agent** — top-left button. Runs the SRE agent (`--execute --jira --confluence`) as a
-   managed subprocess; its live log is behind the **Agent log** button.
-2. **Inject a fault** — click one (e.g. **Auth tier failing**). Amber buttons (Postgres/Redis)
-   are Tier-2 (need approval).
-3. **Watch** the **service topology** cascade red and collapse to a single incident, the
-   **incident feed** fill in, and the KPI strip (auto-resolve %, MTTR, pages avoided) update.
-   Click an incident for its lifecycle timeline + the LLM root cause; **Jira ↗** links open the
-   real ticket.
-4. **Approve / reject** Tier-2 proposals inline in the incident drawer.
-5. **Reset lab** clears all chaos and restarts any stopped containers.
-
-Tickets land in **Jira** (project HELP) and post-mortems in **Confluence** (space ReliAxiom) by
-default — the local SQLite/markdown mirror keeps working if Atlassian is unreachable. Tear down
-with `.\scripts\demo-down.ps1` (`-Reset` to wipe state, `-Hard` to remove the lab).
-
-> The dashboard's read side is a pure projection over the agent's SQLite stores; the control
-> side (agent/faults/approvals) is orchestration only — neither changes detection/diagnosis
-> logic. Reliability: with both `OPENROUTER_API_KEY` and `GEMINI_API_KEY` in `.secrets\llm.env`,
-> diagnosis chains them (FallbackProvider) so a free-tier 429 can't kill a live demo.
-
-The §5 terminal scenarios below still work for manual/automated runs, but the dashboard is the
-intended demo surface.
+> **For a client demo, start clean:** `.\scripts\demo-up.ps1 -Reset` so the KPI strip and incident
+> feed start empty and every number you show was earned during the demo.
 
 ---
 
-## 2. Start the lab (the system being watched)
+## PART 2 — THE DEMO FLOW (≈7 minutes, click by click)
 
-```powershell
-docker compose -f C:\Mine\Concave\logs-streaming-demo-app\docker-compose.yml up -d
-docker compose -f C:\Mine\Concave\logs-streaming-demo-app\docker-compose.yml ps   # 7 "Up"
-```
+Run it in this order — it builds from "it's quiet" to "it fixes things" to "it knows when to ask."
 
----
+### Step 0 — Start the agent (and show it's silent)
+- **Click:** **Start agent** (top-left).
+- **What happens:** the agent launches live (`--execute --jira --confluence`) and begins watching
+  logs, metrics, and traces.
+- **Show:** the **Agent log** heartbeat — `# [..] healthy · N lines · 9 services · containers: all up`.
+  The topology is all green; the incident feed is empty.
+- **Say:** *"It's watching everything right now — and saying nothing, because nothing is wrong.
+  Silence on a healthy system is the whole point; a noisy monitor gets ignored."*
 
-## 3. Run the offline tests (no Docker / no API needed)
+### Step 1 — Auto-fix (the headline) · **API 500s**
+- **Click:** **API 500s**.
+- **What the agent does:** detects an error spike, **collapses the api→webapp→gateway→loadgen
+  cascade into ONE incident**, the LLM diagnoses it, it **restarts api (Tier-1, automatic)**, then
+  verifies the 5xx ratio dropped before resolving.
+- **Show:** topology — api goes red then green; incident feed walks `detecting → diagnosing →
+  acting → verifying → resolved`; open the drawer for the **root cause + evidence + Jira ↗**.
+- **Say:** *"Four services screamed; it filed **one** ticket, found the root, fixed it, and proved
+  recovery — no human touched it."*
 
-```powershell
-python -m pytest tests -q                # expect 193 passed
-```
+### Step 2 — Correlation at the root · **Auth tier failing**
+- **Click:** **Auth tier failing.**
+- **What the agent does:** auth 5xx fans out to api/webapp/gateway/loadgen; correlation roots the
+  whole thing at **auth** and restarts **auth**, not the symptoms.
+- **Show:** several nodes red, but **one** incident `auth:unreachable`; the drawer names auth as root.
+- **Say:** *"It fixed the cause, not the five places that hurt."*
 
----
+### Step 3 — The silent fault · **Worker stopped**
+- **Click:** **Worker stopped.**
+- **What the agent does:** no errors anywhere — the worker just goes quiet. The silence detector
+  catches it and **restarts worker (Tier-1)**.
+- **Say:** *"The scariest outages are silent. Threshold-on-errors would miss this; absence-of-signal
+  is itself a signal."*
 
-## 4. Reset helper (run before each scenario)
+### Step 4 — Ask a human first · **Postgres down** (Tier-2 approval)
+- **Click:** **Postgres down.**
+- **What the agent does:** roots it at the **stateful** postgres → **does not act**. It posts a
+  proposal with **blast radius** and enters `AWAITING_APPROVAL`.
+- **Show:** the drawer now has **Approve / Reject** and the blast radius.
+  - **Approve** → it restarts postgres, verifies, resolves; *your name is recorded on the ticket*.
+  - **Reject** → it escalates with **no action**, assigned to on-call.
+  - **Do nothing** → after the timeout it escalates automatically.
+- **Say:** *"Stateless things it fixes itself. Anything that could lose data, a human approves —
+  and that rule lives in code, so a confident-but-wrong model can't override it."*
 
-The agent persists state in `.state\`. **Always stop the agent and clear state between
-scenarios**, or a new fault dedups onto the old incident.
+### Step 5 — Knowing when to stop · **escalation / the restart cap**
+- **Click:** **API 500s** and let it auto-fix a few times in a row.
+- **What the agent does:** after the **restart cap** (per service per hour) is hit, the next attempt
+  is **blocked by a guardrail and the incident escalates** to a human.
+- **Say:** *"It also knows when to stop trying and hand off — restart-looping a broken service is
+  how automation makes outages worse."*
 
-```powershell
-# Terminal A: Ctrl+C to stop the agent first, then:
-Remove-Item .state -Recurse -Force -ErrorAction SilentlyContinue
-docker compose -f C:\Mine\Concave\logs-streaming-demo-app\docker-compose.yml start postgres redis worker
-docker exec api python -c "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:5000/chaos/errors/off', method='POST'))"
-```
-
-Start the agent (Terminal A). `--execute` lets it actually act; drop it for dry-run:
-
-```powershell
-python -m sre_agent.main --config configs\fast-demo.json --execute
-```
-
-You'll see a **status heartbeat every 15s** so you always know what it's doing:
-
-```
-# [09:43:02] healthy · 78 lines · 4 services · containers: all up · queue=0
-# [09:44:20] DEGRADED · 976 lines · 4 services · containers: DOWN=worker · queue=33
-#    INC-1 [SRE-1] worker:silence → VERIFYING — watching for recovery (28s left, else retry/escalate)
-```
-
----
-
-## 5. The scenarios
-
-Every fault below is injected from **Terminal B**. Watch **Terminal A** (heartbeat + events).
-Reset (§4) between each.
-
-| # | Outcome | Trigger | Who fixes it |
-|---|---------|---------|--------------|
-| A2 | **Cascade → one incident** (auth tier) | auth chaos errors (see below) | agent auto-restarts auth |
-| A3 | **Provider outage** (payments) | payments chaos errors | agent auto-restarts payments |
-| A | **Auto-resolve** (Tier-1) | `docker stop worker` | agent, no human |
-| B | **Approve → agent fixes** (Tier-2) | `docker stop postgres` | human approves, agent acts |
-| C | **Reject → human fixes** (Tier-2) | `docker stop postgres` | human rejects + fixes |
-| D | **Approval timeout → human** | `docker stop postgres` | nobody responds → escalate |
-| E | **Can't fix → escalate** (guardrail) | kill worker repeatedly | agent gives up → human |
-| F | **Act → no recovery → retry → escalate** | kill worker during verify | agent retries, then human |
-| G | **One fault = one ticket** (correlation) | `docker stop postgres` | (observation) |
-| H | **Maintenance silence** | any fault, agent in `--maintenance` | (observation) |
-| I | **Healthy / null** | nothing | (observation) |
-
-### A — Auto-resolve (Tier-1, no human)
-Restarting a *stateless* service (worker/api/webapp/gateway) is auto-tier.
-
-```powershell
-# Terminal B
-docker stop worker
-```
-**Agent:** detects silence → diagnoses "worker hung" → runs `docker restart worker` →
-verifies it logs again → **auto-resolves** the ticket. Tags its own restart so it doesn't
-alarm on the recovery.
-**Verify:**
-```powershell
-docker inspect worker --format '{{.State.Status}}'    # running
-python -c "import sqlite3; c=sqlite3.connect(r'.state\incidents.db'); print([(r[0],r[1]) for r in c.execute('select id,state from incidents')])"
-# → [('INC-1','RESOLVED')]
-```
-
-### A2 — Auth tier cascade → one incident (the marquee demo)
-The api authenticates every request via the **auth** service. Make auth start failing and the
-whole front tier (api → webapp → gateway → loadgen) errors at once — but the agent collapses the
-fan-out into a **single** `auth:unreachable` incident rooted at auth, then auto-restarts it.
-
-```powershell
-# Terminal B — make the auth tier fail (it stays up, fails fast, no DNS hang):
-docker exec auth python -c "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:5000/chaos/errors/on', method='POST'))"
-```
-**Agent:** one `auth:unreachable` ticket (not five) → diagnoses → `restart_container auth`
-(stateless ⇒ Tier-1) → restart resets the in-memory fault → verifies errors cleared →
-**auto-resolves**. Watch the topology map on the dashboard cascade red and collapse to one node.
-Heal manually if needed: `docker exec auth python -c "...chaos/errors/off..."` or `docker restart auth`.
-
-### A3 — Payments provider outage
-The worker charges every order via the **payments** service. Make it fail:
-
-```powershell
-docker exec payments python -c "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://localhost:5000/chaos/errors/on', method='POST'))"
-```
-**Agent:** `payments:unreachable` incident (worker can't charge orders) → auto-restarts payments
-→ resolves.
-
-### B — Approve → agent fixes (Tier-2)
-Restarting a *stateful* service (postgres/redis) is approval-tier — the agent proposes and
-waits.
-
-```powershell
-# Terminal B
-docker stop postgres                  # clean db_unreachable cascade → one postgres incident
-```
-**Agent:** one `postgres:unreachable` ticket → diagnoses → proposes `restart_container
-postgres` → **AWAITING_APPROVAL** (the heartbeat shows the exact approve command). Then:
-```powershell
-python -m sre_agent.approve list
-python -m sre_agent.approve approve INC-1 --by you@example.com --execute
-```
-**Agent:** runs `docker restart postgres` → verifies → **resolves**; the approver is recorded
-on the ticket.
-
-> The LLM picks the action *kind* (restart_container); the **target is pinned in code to the
-> correlated root_service** (postgres here), so a db outage always proposes a postgres restart
-> (Tier-2) and reaches AWAITING_APPROVAL — the model can't downgrade it by naming a symptom
-> service. See DECISIONS.md D-029.
-
-### C — Reject → human fixes (Tier-2)
-```powershell
-# Terminal B — after the approval prompt appears:
-python -m sre_agent.approve reject INC-1 --by you@example.com
-docker start postgres                 # you fix it manually
-```
-**Agent:** **ESCALATED**, no action taken — the ticket is assigned to on-call.
-
-### D — Approval timeout → human
-Same as B, but **don't respond.** After `approval_timeout_s` (180s in fast-demo) the agent
-**escalates with no action**. Heal manually: `docker start postgres`.
-
-### E — Can't fix → escalate (guardrail)
-`max_restarts_per_hour` is **2** in fast-demo. Kill the worker a third time:
-
-```powershell
-# Terminal B — repeat 3 times, waiting for the agent to restart+resolve between each:
-docker stop worker      # restart #1 (auto-resolves)
-docker stop worker      # restart #2 (auto-resolves)
-docker stop worker      # restart #3 → cap reached → ESCALATED, no action
-```
-**Agent:** on the 3rd, the guardrail blocks the restart → **ESCALATED** ("restart cap
-reached"). Heal: `docker start worker`.
-
-### F — Act → no recovery → retry → escalate
-Kill the worker and **keep killing it** each time the agent restarts it (during the
-verification window). Recovery never holds → the agent re-diagnoses (bounded by
-`max_remediation_loops`) → then **escalates**.
-
-### G — One fault = one ticket (correlation)
-```powershell
-docker stop postgres
-```
-The api/webapp/worker/loadgen all error, but the agent opens **one** `postgres:unreachable`
-ticket, not one per service. Inspect:
-```powershell
-python -c "import sqlite3,sys; sys.stdout.reconfigure(encoding='utf-8'); c=sqlite3.connect(r'.state\tickets.db'); c.row_factory=sqlite3.Row; [print(r['id'],r['fingerprint'],r['severity'],r['status']) for r in c.execute('select * from tickets')]"
-```
-
-### H — Maintenance silence
-Start the agent with `--maintenance`, then inject any fault → **zero tickets, zero
-notifications** (intended for running fault drills without alerting).
-```powershell
-python -m sre_agent.main --config configs\fast-demo.json --maintenance
-```
-
-### I — Healthy / null
-Do nothing. The agent prints `healthy` heartbeats and opens no incidents — silence on a
-healthy system is the headline behavior.
+### Step 6 — Reset
+- **Click:** **Reset lab** (clears chaos, restarts any stopped containers). Point at the **KPI
+  strip** — *auto-resolve %, pages avoided, MTTR* — all earned in the last seven minutes.
 
 ---
 
-## 6. Inspect what happened (any time)
+## PART 3 — EVERY SCENARIO (reference)
 
+All of these are dashboard buttons (or the terminal command shown). Reset between them.
+
+| Button / command | Simulates | Agent response | Tier |
+|---|---|---|---|
+| **API 500s** | api returns ~70% 5xx | one `api:internal_error` incident → restart api → verify | **Auto (1)** |
+| **API latency** | api adds 2–6 s | `metric_latency_p95` → restart api → verify p95 under threshold | **Auto (1)** |
+| **Worker stopped** | the silent fault | `worker:silence` → restart worker → verify it logs again | **Auto (1)** |
+| **Auth tier failing** | login cascade | fan-out collapses to one `auth:unreachable` → restart auth | **Auto (1)** |
+| **Payments provider down** | charges fail | one `payments:unreachable` → restart payments | **Auto (1)** |
+| **Postgres down** | database outage | roots at stateful postgres → **awaits approval** | **Approval (2)** |
+| **Redis down** | cache outage | roots at stateful redis → **awaits approval** | **Approval (2)** |
+| `…/chaos/memleak/start` (terminal) | OOM / crash-loop | repeated `startup` → `api:crash_loop` → restart api | **Auto (1)** |
+
+Terminal chaos (if you prefer the CLI to the buttons):
 ```powershell
-# tickets + their lifecycle
-python -c "import sqlite3,sys; sys.stdout.reconfigure(encoding='utf-8'); c=sqlite3.connect(r'.state\tickets.db'); c.row_factory=sqlite3.Row; [print(r['id'],r['fingerprint'],r['severity'],r['status']) for r in c.execute('select * from tickets')]"
-
-# every comment (diagnosis, action, approval, resolution)
-python -c "import sqlite3,sys; sys.stdout.reconfigure(encoding='utf-8'); c=sqlite3.connect(r'.state\tickets.db'); c.row_factory=sqlite3.Row; [print('-',r['author']+':',r['body']) for r in c.execute('select author,body from comments')]"
-
-# agent's own actions (change log)
-python -c "import sqlite3,sys; sys.stdout.reconfigure(encoding='utf-8'); c=sqlite3.connect(r'.state\changes.db'); c.row_factory=sqlite3.Row; [print('-',r['actor'],r['change_type'],r['service']) for r in c.execute('select actor,change_type,service from changes')]"
+docker exec api      python -c "import urllib.request;urllib.request.urlopen(urllib.request.Request('http://localhost:5000/chaos/errors/on',method='POST'))"
+docker exec api      python -c "import urllib.request;urllib.request.urlopen(urllib.request.Request('http://localhost:5000/chaos/latency/on',method='POST'))"
+docker stop worker    # / postgres / redis
+docker exec api      python -c "import urllib.request;urllib.request.urlopen(urllib.request.Request('http://localhost:5000/chaos/memleak/start',method='POST'))"
 ```
 
 ---
 
-## 6b. Incident memory + post-mortems (M6)
+## PART 4 — THE AGENT'S THREE KINDS OF EYESIGHT (Grafana / Prometheus / Tempo)
 
-Every resolved/escalated incident writes a **post-mortem** — structured (for memory) and a
-markdown file under `.state\postmortems\`. The **second** time the same fault occurs, the
-agent's diagnosis prompt includes the prior post-mortem ("we've seen this; X fixed it").
+This is where you *prove* the agent isn't guessing from logs alone — it detects on **real metrics**,
+verifies on the **same metric**, and a **trace** shows exactly where a request broke. Everything the
+agent fires on, you can watch fire in Grafana at the same moment.
 
-```powershell
-# after running a scenario to resolution:
-type .state\postmortems\INC-1.md            # the human-readable post-mortem
-python -m sre_agent.report                  # weekly-style health report (volume, recurring faults, auto-resolve %)
+### 4.0 — How to drive Grafana (do this once, keep it open)
+1. Open **http://localhost:3000** → no login (anonymous is on for the lab).
+2. Click the **compass icon → Explore** (top-left).
+3. **Pick the datasource** in the dropdown at the very top-left: **Prometheus**, **Loki**, or **Tempo**.
+4. Paste a query (below), set the time range to **Last 15 minutes** (top-right), and click **Run query**
+   (or the blue **Run** ▶). For metrics, leave it on the **Graph** view; turn on **auto-refresh (5s)**
+   so the line moves live as you inject a fault.
+
+> Prefer raw Prometheus? Same queries paste into **http://localhost:9090/graph** → Execute → **Graph** tab.
+
+### 4.1 — The four standing panels (keep these on screen during the whole demo)
+Open four Explore tabs (or four browser tabs), one query each:
+```promql
+# P1 — request rate per service (the "is traffic flowing" panel)
+sum by (service) (rate(http_requests_total[1m]))
+
+# P2 — 5xx ERROR RATIO per service        → the agent's error detector (fires at 20%)
+sum by (service) (rate(http_requests_total{status=~"5.."}[1m]))
+  / sum by (service) (rate(http_requests_total[1m]))
+
+# P3 — real p95 LATENCY in ms              → the agent's latency detector (fires at 1000ms)
+histogram_quantile(0.95, sum by (service,le) (rate(http_request_duration_seconds_bucket[1m]))) * 1000
+
+# P4 — worker job-queue BACKLOG + throughput → the agent's saturation detector
+queue_depth
+rate(jobs_processed_total[1m])
 ```
+On a healthy system: P1 is steady, **P2 sits at 0**, P3 is a flat ~30–60 ms, P4's `queue_depth` ≈ 0 and
+`jobs_processed_total` ticks along. *That flatness is the story — point at it before you break anything.*
 
-To *see* memory in action: run scenario A (kill-worker) twice without clearing `.state` —
-the second incident's diagnosis is informed by the first's post-mortem.
+### 4.2 — What to show for each error (which panel moves, and what it means)
 
-## 6c. Real Jira + Confluence (M7, opt-in)
+| Inject | Open this | What you'll see | What it means / say |
+|---|---|---|---|
+| **API 500s** | **P2** (5xx ratio) + Loki `{service="api"} \|= "error"` | api's line jumps 0 → ~0.7, then webapp/gateway/loadgen follow | "This is the exact ratio the agent's error detector watches. Four lines moved — it filed **one** ticket." |
+| **API latency** | **P3** (p95) + Tempo | api's p95 jumps ~50 ms → **2000–6000 ms**; P2 stays ~0 | "A **real histogram** p95, not a log guess — and it **verifies recovery on this same line** dropping back under 1 s." |
+| **Worker stopped** | **P4** (queue) | `queue_depth` climbs steadily; `jobs_processed_total` rate → **0**; **P2 never moves** | "No errors anywhere — the work just silently stops. Absence of signal *is* the signal." |
+| **Auth tier failing** | **P2** + Tempo trace | 5xx rises on **auth AND** api/webapp at the same time | "Symptoms in four places, one cause. The trace will prove the cause is auth." |
+| **Payments down** | **P2** (payments) + **P4** | payments 5xx rises; worker can't charge → `queue_depth` grows | "The failure is downstream in payments; the worker is the victim, not the cause." |
+| **Postgres down** | **P2** (api/webapp/worker) | a broad `db_unreachable` 5xx cascade | "Stateful outage — watch the agent root it at postgres and **ask for approval** instead of acting." |
+| **Redis down** | **P2** + Loki `\|= "redis"` | `cache_degraded` then `redis_unreachable` | "Stateful again → Tier-2 approval." |
+| **Memleak (terminal)** | `docker stats api` + Loki `\|= "memory_pressure"` | MEM marches to the 256 MiB cap → OOM → a fresh `startup` log | "Repeated `startup` lines = crash-loop; the agent restarts api." *(cAdvisor can't always label by container on Docker Desktop — use `docker stats` for the memory view.)* |
 
-By default tickets/post-mortems are local SQLite/markdown. To use real Atlassian, put
-credentials in gitignored `.secrets\atlassian.env`:
+**The recovery half (show it for any auto-fix):** after the agent acts, the moved panel returns to
+baseline — P2 back to 0, or P3 back under 1 s. That return is *exactly* what the agent's recovery
+predicate checks before it writes "resolved." Point at the line crossing back under the threshold.
 
-```
-ATLASSIAN_SITE=https://your-site.atlassian.net
-ATLASSIAN_EMAIL=you@example.com
-ATLASSIAN_API_TOKEN=...        # id.atlassian.com/manage-profile/security/api-tokens
-JIRA_PROJECT_KEY=HELP
-CONFLUENCE_SPACE_KEY=ReliAxiom
-```
+### 4.3 — Traces (Tempo): showing *where* a request broke
+Explore → **Tempo** → **Search** tab → **Service Name** `api` → **Run** → click any trace → you get the
+**`gateway → webapp → api → {postgres, redis, auth}`** waterfall. To jump straight to failures, use the
+**TraceQL** tab: `{ status = error }`.
+- **During Auth tier failing:** open a failing trace — the **red span is `auth`**, and its parent `api`
+  span is errored *because* of it. That's visual, undeniable proof of root cause: *"the agent said auth;
+  the trace shows auth."*
+- **During API latency:** the **api span is visibly long** in the waterfall — you can *see* the 2–6 s.
 
-Then run with the flags (SQLite/markdown still mirror locally; Confluence publish is
-best-effort so an outage never blocks the agent):
+### 4.4 — Logs (Loki): the raw evidence the agent cited
+Explore → **Loki** → `{service="api"}` (add `|= "error"` to filter). When you open an incident's drawer
+in the console, the **evidence it cited** (request ids, error codes) is in these same lines — the agent
+isn't allowed to cite anything that isn't really here (hallucinated evidence is grounds for escalation).
 
-```powershell
-python -m sre_agent.main --config configs\fast-demo.json --execute --jira --confluence
-```
-
-Incidents become Jira issues in your project (severity→priority, lifecycle→workflow,
-fingerprint as a dedup label); resolved/escalated incidents publish a post-mortem page to
-your Confluence space.
-
-## 7. Automated scoring (no manual agent)
-
-Stop the manual agent first (it runs its own).
-
-```powershell
-python -m eval.harness --scenario kill-worker     # detection scoring
-python -m eval.harness --scenario auth-down        # auth-tier cascade → one incident
-python -m eval.harness --scenario payments-down    # payments provider outage
-python -m eval.harness --all                        # every scenario in sequence
-python -m eval.harness --null --duration 900      # healthy → must stay silent
-python -m eval.diagnosis_eval                      # diagnosis accuracy vs ground truth (~4/5)
-```
+### 4.5 — The agent monitoring *itself* (close the loop)
+The lab metrics above are the agent's *eyes*. The agent also emits its *own* Prometheus metrics — run a
+terminal agent with `--health` and scrape :9108 (see Part 5.5). In Prometheus you can then graph
+`sre_mttr_seconds`, `sre_actions_total`, `rate(sre_candidates_total[5m])` next to the lab panels — the
+watcher, watched.
 
 ---
 
-## 8. Where to read the code
+## PART 5 — "THIS IS PRODUCTION-GRADE, NOT A TOY"
+
+Show as many of these as the audience wants depth for.
+
+### 5.1 Real Jira + real Confluence
+Every incident is a Jira issue in **HELP** (severity→priority, lifecycle→workflow, fingerprint as a
+dedup label, comments for diagnosis/action/approval/resolution). Every resolved/escalated incident
+publishes a **Confluence post-mortem** to **ReliAxiom**. *Both keep a local mirror, so an Atlassian
+outage never blocks the agent.*
+
+### 5.2 Incident memory (it gets smarter)
+Run the **same** fault **twice** without resetting state. The second incident's diagnosis text
+**references the prior post-mortem** ("we've seen this; X fixed it").
+```powershell
+python -m sre_agent.report      # weekly-style report: volume, recurring faults, auto-resolve %
+type .state\postmortems\INC-1.md
+```
+
+### 5.3 Remediation on real Kubernetes, under a locked-down identity
+Proves the engine isn't tied to Docker/your laptop: it remediates a real Deployment on a real (local,
+free) `kind` cluster, authenticating as a ServiceAccount that can do **exactly** `get/list/patch` on
+Deployments in one namespace — nothing else. Four short beats:
+
+**(a) One-time: create the cluster + apply the scoped permissions**
+```powershell
+.\scripts\setup-kind.ps1     # makes cluster "sre-lab" + applies deploy\k8s\rbac.yaml
+```
+- **Show:** the tail prints `serviceaccount/sre-agent created`, `role/rolebinding created`, and the API
+  server URL + a token. *(First run downloads a ~1 GB node image — minutes; after that it's instant.)*
+
+**(b) The security headline — let Kubernetes itself say what the agent may do**
+```powershell
+$sa = "system:serviceaccount:lab:sre-agent"
+kubectl --context kind-sre-lab -n lab auth can-i patch  deployments --as=$sa   # yes
+kubectl --context kind-sre-lab -n lab auth can-i delete deployments --as=$sa   # no
+kubectl --context kind-sre-lab -n lab auth can-i get    secrets     --as=$sa   # no
+kubectl --context kind-sre-lab -n lab auth can-i '*'    '*'         --as=$sa   # no
+```
+- **Show:** one **`yes`** (restart) and three **`no`**s. **Say:** *"The blast radius is an RBAC grant,
+  not host-root. It can roll a Deployment and literally nothing else — it can't delete a workload or
+  read a secret. That's the line a security team signs off on."* *(A `no` answer exits non-zero — that's
+  the expected proof, not an error.)*
+
+**(c) Put a service on the cluster and let the agent's real backend restart it**
+```powershell
+kubectl --context kind-sre-lab -n lab create deployment worker --image=nginx --replicas=2
+kubectl --context kind-sre-lab -n lab rollout status deployment/worker --timeout=120s
+kubectl --context kind-sre-lab -n lab get pods -l app=worker        # note the pod name hashes + AGE
+
+# gather the scoped connection details and run the AGENT'S OWN KubernetesActionBackend:
+$server = kubectl --context kind-sre-lab config view --minify -o jsonpath='{.clusters[0].cluster.server}'
+$caData = kubectl --context kind-sre-lab config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}'
+$caFile = Join-Path (Get-Location) ".state\kind-ca.crt"
+[IO.File]::WriteAllBytes($caFile, [Convert]::FromBase64String($caData))
+$env:SRE_KUBE_API_SERVER=$server
+$env:SRE_KUBE_TOKEN=(kubectl --context kind-sre-lab -n lab create token sre-agent --duration=1h)
+$env:SRE_KUBE_CA=$caFile
+python scripts\k8s_restart_demo.py
+```
+- **Show:** the three lines it prints —
+  `BEFORE: ready 2/2, gen 1/1` → `AGENT ACTION: rollout restart issued (HTTP 200)` →
+  `AFTER: ready 2/2, gen 1/2`. **Say:** *"`gen 1 → 2` means it's an idempotent declarative rollout —
+  the same `kubectl rollout restart` mechanism — and it verifies against the Deployment's
+  `readyReplicas`/`observedGeneration`, **the cluster's real state**, not a CLI exit code."*
+
+**(d) Prove the pods were actually replaced**
+```powershell
+kubectl --context kind-sre-lab -n lab rollout status deployment/worker --timeout=120s
+kubectl --context kind-sre-lab -n lab get pods -l app=worker
+```
+- **Show:** the pod-name hashes **changed** and **AGE reset** — the agent replaced the running workload
+  on a real cluster, through a least-privilege identity. **Say:** *"Same engine, same decision logic —
+  only the remediation backend swapped from Docker to Kubernetes. Detection, tiers, and approvals are
+  untouched."* (Backend code: `sre_agent\action\k8s_backend.py`; RBAC: `deploy\k8s\rbac.yaml`.)
+
+### 5.4 High availability — no single point of failure
+State moves to shared Postgres; replicas elect a leader; only the leader acts; kill it and a standby
+takes over **without re-acting**.
+```powershell
+docker run -d --name sre-statedb -e POSTGRES_PASSWORD=sre -e POSTGRES_DB=sre -e POSTGRES_USER=sre -p 5433:5432 postgres:16
+$env:SRE_STATE_DSN = "host=localhost port=5433 dbname=sre user=sre password=sre"
+python -m pytest tests/test_pg_stores.py tests/test_ha_coordination.py -q     # 14 passed
+# then run two replicas with --postgres --ha --health (health_port 9108 / 9109); stop the leader,
+# watch the standby's /readyz flip 503 → 200 as it takes over.
+```
+- **Say:** *"An SRE agent being down during an incident is the worst possible time — so it runs HA,
+  and the restart cap is atomic across the whole fleet."* (Manifest: `deploy\k8s\agent-deployment.yaml`.)
+
+### 5.5 It monitors itself (watch the watcher)
+```powershell
+python -m sre_agent.main --health --config configs\fast-demo.json
+curl http://localhost:9108/metrics    # sre_mttr_seconds, sre_escalations_total, sre_actions_total…
+curl http://localhost:9108/healthz    # liveness — a dead-man's switch if the loop wedges
+curl http://localhost:9108/readyz     # readiness — leader-aware
+```
+- **Say:** *"It emits its own Prometheus metrics — detection latency, MTTR, escalation rate — and
+  pages on a stalled heartbeat or if it goes blind. It's watched like any production service."*
+  SLO alert rules + scrape config are in `deploy\alerts.yml` and `deploy\prometheus-scrape.yml`.
+
+### 5.6 Safety proofs (one command each)
+```powershell
+python -m pytest tests/test_ratelimit.py::test_concurrent_consumers_never_exceed_cap -v   # cap holds under 20 racers
+python -m eval.harness --null --duration 900                                              # 15 min healthy → ZERO incidents
+```
+- **Say:** *"False positives are treated as the worst kind of bug. The null test is the headline
+  guarantee: an hour of healthy traffic produces total silence."*
+
+### 5.7 More beats to show if the audience wants depth
+- **It doesn't alarm on its own fix (self-suppression).** When the agent restarts a service, that
+  restart looks like a crash to a naive monitor. Watch the incident feed during any auto-fix: there is
+  **never a second incident** for the agent's own restart. Inspect the proof — every agent action is
+  tagged in the change log *before* it runs, and detection ignores anomalies inside that tag's window:
+  ```powershell
+  python -c "import sqlite3; c=sqlite3.connect(r'.state\changes.db'); c.row_factory=sqlite3.Row; [print('-',r['actor'],r['change_type'],r['service']) for r in c.execute('select actor,change_type,service from changes')]"
+  ```
+  *(One `sre-agent restart_container <svc>` row per fix — the tag that stops it diagnosing itself.)*
+- **Dedup (one fault = one ticket, not a storm).** Leave a fault on without resetting. The incident
+  feed shows **one** incident gaining **comments**, not a new ticket every cycle. *"A flapping service
+  pages you once, then updates the same ticket."*
+- **Maintenance mode (planned-work silence).** Run a fault drill with **zero** tickets/alerts:
+  ```powershell
+  python -m sre_agent.main --config configs\fast-demo.json --maintenance
+  ```
+  *"During a deploy or a game-day, you don't want the agent paging — it still detects and diagnoses,
+  but files nothing."*
+- **It gets smarter (incident memory).** (Part 5.2) The **second** occurrence of a fault cites the
+  prior post-mortem in its diagnosis — *"we've seen this; here's what fixed it last time."*
+
+---
+
+## PART 6 — COMMAND REFERENCE (what you get when you run it)
+
+| Command | What you get |
+|---|---|
+| `.\scripts\demo-up.ps1 [-Reset]` | lab + observability stack + dashboard + browser open on :8000 |
+| **Dashboard → Start agent** | live agent (`--execute --jira --confluence`): detects, diagnoses, fixes, asks, escalates |
+| `python -m sre_agent.main --config configs\fast-demo.json` | terminal agent, **dry-run** (decisions only, restarts nothing) |
+| `…\main.py … --execute` | same, but it **actually** restarts containers |
+| `…\main.py … --maintenance` | detect + diagnose but file **zero** tickets/alerts (fault drills) |
+| `…\main.py … --postgres --ha --health` | HA replica on shared Postgres + health/metrics server |
+| `python -m sre_agent.approve list` | incidents awaiting human approval |
+| `python -m sre_agent.approve approve INC-3 --by you --execute` | approve a Tier-2 action → it runs, verifies, resolves |
+| `python -m sre_agent.approve reject INC-3 --by you` | reject → the incident escalates, no action |
+| `python -m sre_agent.report` | weekly report: volume, noisiest services, recurring faults, auto-resolve % |
+| `python -m eval.harness --scenario api-errors` | score one labeled fault (detected? time-to-detect?) |
+| `python -m eval.harness --all` | score every scenario in sequence |
+| `python -m eval.harness --null --duration 900` | the silence guarantee — must produce zero incidents |
+| `python -m sre_agent.dashboard` (or via demo-up) | the read-only console on :8000 |
+
+Config files: `configs\demo.json` (dashboard default — metrics + traces on),
+`configs\fast-demo.json` (short timings for terminal scenarios).
+
+---
+
+## RESET / TEARDOWN / GOTCHAS
+
+**Reset between faults:** dashboard **Reset lab**, or `.\scripts\demo-up.ps1 -Reset` for a fully
+clean slate (wipes incident history too).
+
+**Teardown:**
+```powershell
+.\scripts\demo-down.ps1                 # stop the lab + dashboard ( -Reset wipes state, -Hard removes the lab )
+docker rm -f sre-statedb                # only if you started the HA state DB (Part 5.4)
+kind delete cluster --name sre-lab      # only if you created the Kubernetes cluster (Part 5.3)
+```
+
+**Gotchas (these bite):**
+1. **Docker must be running** before anything else.
+2. **Reset between faults** — otherwise a new fault dedups onto the previous incident and "nothing
+   seems to happen."
+3. **One agent at a time on the default (SQLite) path** — don't run the dashboard agent *and* a
+   terminal agent *and* the harness together. (The **HA path**, Part 5.4, is the deliberate
+   exception: multiple replicas coexist and leader election keeps only one acting.)
+4. **`--execute` actually restarts containers.** Omit it (dry-run) to show decisions only.
+5. **LLM quota:** a `429` / `undetermined` escalation means the key is rate-limited — having both
+   OpenRouter and Gemini keys lets it fail over automatically.
+
+---
+
+## WHERE THE CODE LIVES (the integration map)
 
 | Layer | Path | Start here |
-|-------|------|-----------|
-| Data objects | `sre_agent/models.py` | `IncidentCandidate`, `LogRecord` |
-| Ingestion | `sre_agent/ingest/` | `tailer.py` → `parser.py` → `window.py` |
+|---|---|---|
+| Data objects | `sre_agent/models.py` | `IncidentCandidate`, `LogRecord`, `Trace` |
+| Ingestion (logs) | `sre_agent/ingest/` | `tailer.py` → `parser.py` → `window.py` |
+| Telemetry (metrics/logs/traces) | `sre_agent/telemetry/` | `sources.py` (SPIs), `adapters.py` |
 | Detection | `sre_agent/detect/` | `engine.py` (debounce/cooldown), then each detector |
-| Pollers | `sre_agent/poll/` | `pollers.py`, `store.py`, `adapters.py` |
-| Incidents | `sre_agent/incident/` | `manager.py`, then `correlation.py`, `topology.py`, `lifecycle.py` |
-| Diagnosis | `sre_agent/diagnosis/` | `diagnoser.py`, `context.py`, `llm.py` |
-| Actions | `sre_agent/action/` | `catalog.py` (tiers), `executor.py` (guardrails), `recovery.py` |
-| Integrations | `sre_agent/integrations/` | `ticketing.py`, `notifications.py` (stubs; JIRA/Teams at M7) |
-| Wiring | `sre_agent/main.py` + `approve.py` | `build_engine()`, `manager.step()`, approval CLI |
+| Incidents | `sre_agent/incident/` | `manager.py`, `correlation.py` (multi-signal), `topology.py`, `pg_store.py` |
+| Diagnosis (LLM) | `sre_agent/diagnosis/` | `diagnoser.py`, `context.py`, `llm.py` |
+| Actions | `sre_agent/action/` | `catalog.py` (tiers), `backend.py` + `k8s_backend.py`, `ratelimit.py` + `pg_ratelimit.py` |
+| Integrations | `sre_agent/integrations/` | `ticketing.py` + `pg_ticketing.py`, `confluence.py`, `postmortems.py` + `pg_postmortems.py` |
+| State & HA | `sre_agent/` | `state_factory.py`, `pgdb.py`, `ha/leader.py` |
+| Self-monitoring | `sre_agent/` | `health.py`, `metrics.py` |
+| Dashboard | `sre_agent/dashboard/` | `server.py`, `control.py`, `metrics.py` |
+| Wiring | `sre_agent/main.py` + `approve.py` | `build_engine()`, `manager.step()`, the factories |
+| Deploy | `deploy/` + `scripts/` | `k8s/rbac.yaml`, `k8s/agent-deployment.yaml`, `alerts.yml` |
 
-Design rationale for any choice is in `DECISIONS.md` (D-001…D-020).
-
----
-
-## Gotchas (these bite)
-1. **Stop the agent before clearing `.state`** — it holds the SQLite files (else "file in use").
-2. **Reset between scenarios** (§4) — or a fault dedups onto the previous incident.
-3. **One agent at a time** — don't run a manual agent and the eval harness together.
-4. **`--execute` actually restarts containers.** Omit it to dry-run (decisions only).
-5. **Gemini quota is per Google *project*** — a new key in the same project shares the same
-   limit. `429`/`undetermined` escalations mean the key is rate-limited.
+Design rationale for every choice is in **DECISIONS.md** (D-001…D-043).
